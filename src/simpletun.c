@@ -2,12 +2,13 @@
  * simpletun.c                                                            *
  *                                                                        *
  * A simplistic, simple-minded, naive tunnelling program using tun/tap    *
- * interfaces and TCP. Handles (badly) IPv4 for tun, ARP and IPv4 for     *
+ * interfaces and UDP. Handles (badly) IPv4 for tun, ARP and IPv4 for     *
  * tap. DO NOT USE THIS PROGRAM FOR SERIOUS PURPOSES.                     *
  *                                                                        *
  * You have been warned.                                                  *
  *                                                                        *
  * (C) 2009 Davide Brini.                                                 *
+ * Modified 2017 Jeb Bearer.                                              *
  *                                                                        *
  * DISCLAIMER AND WARNING: this is all work in progress. The code is      *
  * ugly, the algorithms are naive, error checking and input validation    *
