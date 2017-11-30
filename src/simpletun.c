@@ -52,12 +52,16 @@
 #define IP_HDR_LEN 20
 #define ETH_HDR_LEN 14
 #define ARP_PKT_LEN 28
-#define OPENSSL_KEY_SIZE 32
-#define OPENSSL_IV_SIZE 16
+#define OPENSSL_KEY_SIZE (256/8)
+#define OPENSSL_IV_SIZE (128/8)
+#define HMAC_SIZE (256/8)
+
+#define OPENSSL_ERR() { ERR_print_errors_fp(stderr); result = -1; goto openssl_cleanup; }
 
 static int debug;
 static char *progname;
 static unsigned char openssl_key[OPENSSL_KEY_SIZE] = {0};
+static EVP_PKEY *openssl_pkey;
 static unsigned char openssl_iv[OPENSSL_IV_SIZE] = {0};
 
 ssize_t encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *ciphertext) {
@@ -65,7 +69,7 @@ ssize_t encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *ciph
 
   int len;
 
-  int ciphertext_len;
+  ssize_t result = 0;
 
   /* Create and initialise the context */
   if (!(ctx = EVP_CIPHER_CTX_new())) {
@@ -78,33 +82,24 @@ ssize_t encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *ciph
    * In this example we are using 256 bit AES (i.e. a 256 bit key). The
    * IV size for *most* modes is the same as the block size. For AES this
    * is 128 bits */
-  if (1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) {
-    ERR_print_errors_fp(stderr);
-    return -1;
-  }
+  if (1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) OPENSSL_ERR();
 
   /* Provide the message to be encrypted, and obtain the encrypted output.
    * EVP_EncryptUpdate can be called multiple times if necessary
    */
-  if (1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len)) {
-    ERR_print_errors_fp(stderr);
-    return -1;
-  }
-  ciphertext_len = len;
+  if (1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len)) OPENSSL_ERR();
+  result = len;
 
   /* Finalise the encryption. Further ciphertext bytes may be written at
    * this stage.
    */
-  if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) {
-    ERR_print_errors_fp(stderr);
-    return -1;
-  }
-  ciphertext_len += len;
+  if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) OPENSSL_ERR();
+  result += len;
 
-  /* Clean up */
+openssl_cleanup:
   EVP_CIPHER_CTX_free(ctx);
 
-  return ciphertext_len;
+  return result;
 }
 
 ssize_t decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *plaintext) {
@@ -112,7 +107,7 @@ ssize_t decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *pl
 
   int len;
 
-  int plaintext_len;
+  ssize_t result = 0;
 
   /* Create and initialise the context */
   if (!(ctx = EVP_CIPHER_CTX_new())) {
@@ -125,33 +120,80 @@ ssize_t decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *pl
    * In this example we are using 256 bit AES (i.e. a 256 bit key). The
    * IV size for *most* modes is the same as the block size. For AES this
    * is 128 bits */
-  if (1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) {
-    ERR_print_errors_fp(stderr);
-    return -1;
-  }
+  if (1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) OPENSSL_ERR();
 
   /* Provide the message to be decrypted, and obtain the plaintext output.
    * EVP_DecryptUpdate can be called multiple times if necessary
    */
-  if (1 != EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len)) {
-    ERR_print_errors_fp(stderr);
-    return -1;
-  }
-  plaintext_len = len;
+  if (1 != EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len)) OPENSSL_ERR();
+  result = len;
 
   /* Finalise the decryption. Further plaintext bytes may be written at
    * this stage.
    */
-  if (1 != EVP_DecryptFinal_ex(ctx, plaintext + len, &len)) {
+  if (1 != EVP_DecryptFinal_ex(ctx, plaintext + len, &len)) OPENSSL_ERR();
+  result += len;
+
+
+openssl_cleanup:
+  EVP_CIPHER_CTX_free(ctx);
+
+  return result;
+}
+
+/*
+ * Compute the SHA256 HMAC digest of msg and store it in hmac. hmac must point to an array of at
+ * least HMAC_SIZE bytes.
+ */
+int hmac_sign(unsigned char *msg, int msg_len, unsigned char *hmac) {
+  int result = 0;
+
+  EVP_MD_CTX* ctx = EVP_MD_CTX_create();
+  if (ctx == NULL) {
     ERR_print_errors_fp(stderr);
     return -1;
   }
-  plaintext_len += len;
 
-  /* Clean up */
-  EVP_CIPHER_CTX_free(ctx);
+  const EVP_MD* md = EVP_get_digestbyname("SHA256");
+  if (md == NULL) OPENSSL_ERR();
 
-  return plaintext_len;
+  if (EVP_DigestInit_ex(ctx, md, NULL) != 1) OPENSSL_ERR();
+  if (EVP_DigestSignInit(ctx, NULL, md, NULL, openssl_pkey) != 1) OPENSSL_ERR();
+  if (EVP_DigestSignUpdate(ctx, msg, msg_len) != 1) OPENSSL_ERR();
+
+  size_t hmac_size = 0;
+  if (EVP_DigestSignFinal(ctx, NULL, &hmac_size) != 1 || hmac_size == 0) OPENSSL_ERR();
+  if (hmac_size != HMAC_SIZE) {
+    fprintf(stderr, "Unexpected hmac size %zu (expected %d)\n", hmac_size, HMAC_SIZE);
+    result = -1;
+    goto openssl_cleanup;
+  }
+
+  if (EVP_DigestSignFinal(ctx, hmac, &hmac_size) != 1) OPENSSL_ERR();
+  if (hmac_size != HMAC_SIZE) {
+    fprintf(stderr, "EVP_DigestSignFinal failed: mismatched sizes (%zu vs %d)\n",
+        hmac_size, HMAC_SIZE);
+    result = -1;
+    goto openssl_cleanup;
+  }
+
+openssl_cleanup:
+  EVP_MD_CTX_destroy(ctx);
+
+  return result;
+}
+
+/*
+ * Compute the SHA256 HMAC digest of msg and compare it to hmac. Returns 0 if digest matches,
+ * 1 if digest does not match, or -1 if an error ocurred.
+ */
+int hmac_verify(unsigned char *msg, int msg_len, unsigned char *hmac) {
+  unsigned char computed_hmac[HMAC_SIZE];
+  if (hmac_sign(msg, msg_len, computed_hmac) < 0) {
+    return -1;
+  }
+
+  return !!memcmp(hmac, computed_hmac, HMAC_SIZE);
 }
 
 /**************************************************************************
@@ -229,7 +271,10 @@ void tap_to_net(int tap_fd, int net_fd, const struct sockaddr_in *remote) {
   count++;
   do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", count, nbytes);
 
-  unsigned char cipher[BUFSIZE];
+  unsigned char packet[BUFSIZE];
+  unsigned char *hmac = packet;
+  unsigned char *cipher = packet + HMAC_SIZE;
+
   ssize_t cipher_len = encrypt(plain, nbytes, cipher);
   if (cipher_len == -1) {
     do_debug("TAP2NET %lu: Failed to encrypt message, dropping packet\n", count);
@@ -238,7 +283,12 @@ void tap_to_net(int tap_fd, int net_fd, const struct sockaddr_in *remote) {
     do_debug("TAP2NET %lu: Encrypted message is %zd bytes\n", count, cipher_len);
   }
 
-  ssize_t nwrite = sendto(net_fd, cipher, cipher_len, 0, (const struct sockaddr *)remote, sizeof(*remote));
+  if (hmac_sign(cipher, cipher_len, hmac) < 0) {
+    do_debug("TAP2NET %lu: Failed to compute message HMAC, dropping packet\n", count);
+    return;
+  }
+
+  ssize_t nwrite = sendto(net_fd, packet, HMAC_SIZE + cipher_len, 0, (const struct sockaddr *)remote, sizeof(*remote));
   if (nwrite == -1) {
     perror("sendto");
     return;
@@ -253,9 +303,9 @@ void net_to_tap(int net_fd, int tap_fd) {
 
   static unsigned long count = 0;
 
-  unsigned char cipher[BUFSIZE];
+  unsigned char packet[BUFSIZE];
 
-  ssize_t nbytes = recvfrom(net_fd, cipher, BUFSIZE, 0, NULL, NULL);
+  ssize_t nbytes = recvfrom(net_fd, packet, BUFSIZE, 0, NULL, NULL);
   if (nbytes == -1) {
     perror("recvfrom");
     return;
@@ -268,8 +318,17 @@ void net_to_tap(int net_fd, int tap_fd) {
   count++;
   do_debug("NET2TAP %lu: Read %d bytes from the network\n", count, nbytes);
 
+  unsigned char *hmac = packet;
+  unsigned char *cipher = packet + HMAC_SIZE;
+  size_t cipher_len = nbytes - HMAC_SIZE;
+
+  if (hmac_verify(cipher, cipher_len, hmac) != 0) {
+    do_debug("NET2TAP %lu: Failed to verify HMAC, dropping packet\n", count);
+    return;
+  }
+
   unsigned char plain[BUFSIZE];
-  ssize_t plain_len = decrypt(cipher, nbytes, plain);
+  ssize_t plain_len = decrypt(cipher, cipher_len, plain);
   if (plain_len == -1) {
     do_debug("NET2TAP %lu: Failed to decrypt message, dropping packet\n", count);
     return;
@@ -290,6 +349,9 @@ void init_openssl() {
   ERR_load_crypto_strings();
   OpenSSL_add_all_algorithms();
   OPENSSL_config(NULL);
+
+  // Set pkey to correspond with key
+  openssl_pkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, NULL, openssl_key, OPENSSL_KEY_SIZE);
 }
 
 void read_key(const char *file) {
