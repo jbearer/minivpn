@@ -40,6 +40,10 @@
 #include <errno.h>
 #include <stdarg.h>
 
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000
 #define PORT 55555
@@ -48,9 +52,107 @@
 #define IP_HDR_LEN 20
 #define ETH_HDR_LEN 14
 #define ARP_PKT_LEN 28
+#define OPENSSL_KEY_SIZE 32
+#define OPENSSL_IV_SIZE 16
 
-int debug;
-char *progname;
+static int debug;
+static char *progname;
+static unsigned char openssl_key[OPENSSL_KEY_SIZE] = {0};
+static unsigned char openssl_iv[OPENSSL_IV_SIZE] = {0};
+
+ssize_t encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *ciphertext) {
+  EVP_CIPHER_CTX *ctx;
+
+  int len;
+
+  int ciphertext_len;
+
+  /* Create and initialise the context */
+  if (!(ctx = EVP_CIPHER_CTX_new())) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+
+  /* Initialise the encryption operation. IMPORTANT - ensure you use a key
+   * and IV size appropriate for your cipher
+   * In this example we are using 256 bit AES (i.e. a 256 bit key). The
+   * IV size for *most* modes is the same as the block size. For AES this
+   * is 128 bits */
+  if (1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+
+  /* Provide the message to be encrypted, and obtain the encrypted output.
+   * EVP_EncryptUpdate can be called multiple times if necessary
+   */
+  if (1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+  ciphertext_len = len;
+
+  /* Finalise the encryption. Further ciphertext bytes may be written at
+   * this stage.
+   */
+  if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+  ciphertext_len += len;
+
+  /* Clean up */
+  EVP_CIPHER_CTX_free(ctx);
+
+  return ciphertext_len;
+}
+
+ssize_t decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *plaintext) {
+  EVP_CIPHER_CTX *ctx;
+
+  int len;
+
+  int plaintext_len;
+
+  /* Create and initialise the context */
+  if (!(ctx = EVP_CIPHER_CTX_new())) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+
+  /* Initialise the decryption operation. IMPORTANT - ensure you use a key
+   * and IV size appropriate for your cipher
+   * In this example we are using 256 bit AES (i.e. a 256 bit key). The
+   * IV size for *most* modes is the same as the block size. For AES this
+   * is 128 bits */
+  if (1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, openssl_key, openssl_iv)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+
+  /* Provide the message to be decrypted, and obtain the plaintext output.
+   * EVP_DecryptUpdate can be called multiple times if necessary
+   */
+  if (1 != EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+  plaintext_len = len;
+
+  /* Finalise the decryption. Further plaintext bytes may be written at
+   * this stage.
+   */
+  if (1 != EVP_DecryptFinal_ex(ctx, plaintext + len, &len)) {
+    ERR_print_errors_fp(stderr);
+    return -1;
+  }
+  plaintext_len += len;
+
+  /* Clean up */
+  EVP_CIPHER_CTX_free(ctx);
+
+  return plaintext_len;
+}
 
 /**************************************************************************
  * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
@@ -116,9 +218,9 @@ void tap_to_net(int tap_fd, int net_fd, const struct sockaddr_in *remote) {
 
   static unsigned long count = 0;
 
-  char buffer[BUFSIZE];
+  unsigned char plain[BUFSIZE];
 
-  ssize_t nbytes = read(tap_fd, buffer, BUFSIZE);
+  ssize_t nbytes = read(tap_fd, plain, BUFSIZE);
   if (nbytes == -1) {
     perror("read");
     return;
@@ -127,7 +229,16 @@ void tap_to_net(int tap_fd, int net_fd, const struct sockaddr_in *remote) {
   count++;
   do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", count, nbytes);
 
-  ssize_t nwrite = sendto(net_fd, buffer, nbytes, 0, (const struct sockaddr *)remote, sizeof(*remote));
+  unsigned char cipher[BUFSIZE];
+  ssize_t cipher_len = encrypt(plain, nbytes, cipher);
+  if (cipher_len == -1) {
+    do_debug("TAP2NET %lu: Failed to encrypt message, dropping packet\n", count);
+    return;
+  } else {
+    do_debug("TAP2NET %lu: Encrypted message is %zd bytes\n", count, cipher_len);
+  }
+
+  ssize_t nwrite = sendto(net_fd, cipher, cipher_len, 0, (const struct sockaddr *)remote, sizeof(*remote));
   if (nwrite == -1) {
     perror("sendto");
     return;
@@ -142,9 +253,9 @@ void net_to_tap(int net_fd, int tap_fd) {
 
   static unsigned long count = 0;
 
-  char buffer[BUFSIZE];
+  unsigned char cipher[BUFSIZE];
 
-  ssize_t nbytes = recvfrom(net_fd, buffer, BUFSIZE, 0, NULL, NULL);
+  ssize_t nbytes = recvfrom(net_fd, cipher, BUFSIZE, 0, NULL, NULL);
   if (nbytes == -1) {
     perror("recvfrom");
     return;
@@ -157,8 +268,17 @@ void net_to_tap(int net_fd, int tap_fd) {
   count++;
   do_debug("NET2TAP %lu: Read %d bytes from the network\n", count, nbytes);
 
-  /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
-  ssize_t nwrite = write(tap_fd, buffer, nbytes);
+  unsigned char plain[BUFSIZE];
+  ssize_t plain_len = decrypt(cipher, nbytes, plain);
+  if (plain_len == -1) {
+    do_debug("NET2TAP %lu: Failed to decrypt message, dropping packet\n", count);
+    return;
+  } else {
+    do_debug("NET2TAP %lu: Decypted message is %zd bytes\n", count, plain_len);
+  }
+
+  /* now plain[] contains a full packet or frame, write it into the tun/tap interface */
+  ssize_t nwrite = write(tap_fd, plain, plain_len);
   if (nwrite == -1) {
     perror("write");
     return;
@@ -166,17 +286,73 @@ void net_to_tap(int net_fd, int tap_fd) {
   do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", count, nwrite);
 }
 
+void init_openssl() {
+  ERR_load_crypto_strings();
+  OpenSSL_add_all_algorithms();
+  OPENSSL_config(NULL);
+}
+
+void read_key(const char *file) {
+  int fd = open(file, O_RDONLY);
+  if (fd == -1) {
+    perror("Error opening key file");
+    exit(1);
+  }
+
+  ssize_t nbytes = read(fd, openssl_key, OPENSSL_KEY_SIZE);
+  if (nbytes == -1) {
+    perror("Error reading key file");
+    exit(1);
+  } else if (nbytes < OPENSSL_KEY_SIZE) {
+    fprintf(stderr, "Invalid key length %zd (expected %d)", nbytes, OPENSSL_KEY_SIZE);
+    exit(1);
+  }
+
+  // Check that the key isn't too long
+  char dummy;
+  if (read(fd, &dummy, 1) > 0) {
+    fprintf(stderr, "Key is too long (expected %d bytes)", OPENSSL_KEY_SIZE);
+    exit(1);
+  }
+}
+
+void read_iv(const char *file) {
+  int fd = open(file, O_RDONLY);
+  if (fd == -1) {
+    perror("Error opening iv file");
+    exit(1);
+  }
+
+  ssize_t nbytes = read(fd, openssl_iv, OPENSSL_IV_SIZE);
+  if (nbytes == -1) {
+    perror("Error reading iv file");
+    exit(1);
+  } else if (nbytes < OPENSSL_IV_SIZE) {
+    fprintf(stderr, "Invalid iv length %zd (expected %d)", nbytes, OPENSSL_IV_SIZE);
+    exit(1);
+  }
+
+  // Check that the iv isn't too long
+  char dummy;
+  if (read(fd, &dummy, 1) > 0) {
+    fprintf(stderr, "Iv is too long (expected %d bytes)", OPENSSL_IV_SIZE);
+    exit(1);
+  }
+}
+
 /**************************************************************************
  * usage: prints usage and exits.                                         *
  **************************************************************************/
 void usage(void) {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s -i <ifacename> -n <IP> [-p <port>] [-u|-a] [-v]\n", progname);
+  fprintf(stderr, "%s -i <ifacename> -n <IP> [-p <port>] [-o <port>] [-u|-a] [-v]\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
   fprintf(stderr, "-i, --interface <ifacename>: Name of interface to use (mandatory)\n");
+  fprintf(stderr, "-n, --peer-ip <IP>: peer gateway IP address (mandatory)\n");
+  fprintf(stderr, "-k, --encryption-key <file>: key to use for encryption, 256 bit (default 0)");
+  fprintf(stderr, "-e, --encryption-iv <file>: initialization vector for encryption, 128 bit (default 0)");
   fprintf(stderr, "-p, --port <port>: outgoing UDP port (default 55555)\n");
-  fprintf(stderr, "-n, --peer-ip <IP>: peer gateway IP address\n");
   fprintf(stderr, "-o, --peer-port<port>: peer gateway UDP port (default 55555)\n");
   fprintf(stderr, "-u, --tunnel use TUN (default)\n");
   fprintf(stderr, "-a, --tap use TAP (instead of TUN)\n");
@@ -199,19 +375,21 @@ int main(int argc, char *argv[]) {
   struct option long_options[] =
   {
     /* These options set a flag. */
-    {"verbose",     no_argument,       &debug, 1},
-    {"tunnel",      no_argument,       &flags, IFF_TUN},
-    {"tap",         no_argument,       &flags, IFF_TAP},
-    {"help",        no_argument,       0, 'h'},
-    {"interface",   required_argument, 0, 'i'},
-    {"port",        required_argument, 0, 'p'},
-    {"peer-ip",     required_argument, 0, 'n'},
-    {"peer-port",   required_argument, 0, 'o'},
+    {"verbose",         no_argument,       &debug, 1},
+    {"tunnel",          no_argument,       &flags, IFF_TUN},
+    {"tap",             no_argument,       &flags, IFF_TAP},
+    {"help",            no_argument,       0, 'h'},
+    {"interface",       required_argument, 0, 'i'},
+    {"port",            required_argument, 0, 'p'},
+    {"peer-ip",         required_argument, 0, 'n'},
+    {"peer-port",       required_argument, 0, 'o'},
+    {"encryption-key",  required_argument, 0, 'k'},
+    {"encryption-iv",   required_argument, 0, 'e'},
     {0, 0, 0, 0}
   };
 
   /* Check command line options */
-  while((option = getopt_long(argc, argv, "i:n:p:o:uahv", long_options, NULL)) > 0){
+  while((option = getopt_long(argc, argv, "i:n:p:o:k:e:uahv", long_options, NULL)) > 0){
     switch(option) {
       case 'd':
         debug = 1;
@@ -237,6 +415,12 @@ int main(int argc, char *argv[]) {
       case 'a':
         flags = IFF_TAP;
         break;
+      case 'k':
+        read_key(optarg);
+        break;
+      case 'e':
+        read_iv(optarg);
+        break;
       case 'v':
         debug = 1;
         break;
@@ -253,6 +437,8 @@ int main(int argc, char *argv[]) {
     my_err("Must specify remote address!\n");
     usage();
   }
+
+  init_openssl();
 
   /* initialize tun/tap interface */
   int tap_fd;
