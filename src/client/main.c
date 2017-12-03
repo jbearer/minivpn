@@ -12,6 +12,7 @@
 #include <openssl/err.h>
 
 #include "debug.h"
+#include "inet.h"
 #include "protocol.h"
 #include "tunnel.h"
 
@@ -34,9 +35,9 @@ typedef struct {
 } session;
 
 static session *session_new(const unsigned char *key, const unsigned char *iv,
-                            int server_ip, uint16_t server_port,
-                            int client_ip, uint16_t client_port,
-                            int network, int netmask)
+                            in_addr_t server_ip, in_port_t server_port,
+                            in_addr_t client_ip, in_port_t client_port,
+                            in_addr_t network, in_addr_t netmask)
 {
   session *s = (session *)malloc(sizeof(session));
   if (s == NULL) {
@@ -52,8 +53,8 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
 
   struct sockaddr_in sin;
   sin.sin_family = AF_INET;
-  sin.sin_addr.s_addr = server_ip;
-  sin.sin_port = htons(server_port);
+  sin.sin_addr.s_addr = hton_ip(server_ip);
+  sin.sin_port = hton_port(server_port);
   if (connect(sockfd, (const struct sockaddr *)&sin, sizeof(sin)) < 0) {
     perror("connect");
     goto err_connect;
@@ -141,12 +142,12 @@ int main(int argc, char **argv)
 {
   unsigned char key[TUNNEL_KEY_SIZE];
   unsigned char iv[TUNNEL_IV_SIZE];
-  int server_port = 55555;
-  int udp_port = 55555;
-  int server_ip;
-  int client_ip;
-  int network;
-  int netmask;
+  in_port_t server_port = 55555;
+  in_port_t udp_port = 55555;
+  in_addr_t server_ip;
+  in_addr_t client_ip;
+  in_addr_t network;
+  in_addr_t netmask;
 
   struct option long_options[] =
   {
@@ -176,10 +177,10 @@ int main(int argc, char **argv)
     usage(argv[0]);
   }
 
-  server_ip = inet_addr(argv[optind++]);
-  client_ip = inet_addr(argv[optind++]);
-  network = atoi(argv[optind++]);
-  netmask = atoi(argv[optind++]);
+  server_ip = ntoh_ip(inet_addr(argv[optind++]));
+  client_ip = ntoh_ip(inet_addr(argv[optind++]));
+  network = ntoh_ip(inet_addr(argv[optind++]));
+  netmask = ntoh_ip(inet_addr(argv[optind++]));
 
   init_ssl();
 

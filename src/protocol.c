@@ -7,6 +7,7 @@
 #include <openssl/ssl.h>
 
 #include "debug.h"
+#include "inet.h"
 #include "protocol.h"
 #include "tunnel.h"
 
@@ -97,18 +98,18 @@ tunnel *minivpn_server_handshake(SSL *ssl, uint32_t server_ip, uint16_t server_p
 
 static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake *p)
 {
-    // p->client_ip = htonl(p->client_ip);
-    p->client_port = htons(p->client_port);
-    // p->client_network = htonl(p->client_network);
-    // p->client_netmask = htonl(p->client_netmask);
+    p->client_ip = hton_ip(p->client_ip);
+    p->client_port = hton_port(p->client_port);
+    p->client_network = hton_ip(p->client_network);
+    p->client_netmask = hton_ip(p->client_netmask);
 }
 
 static void server_handshake_to_network_byte_order(minivpn_pkt_server_handshake *p)
 {
-    // p->server_ip = htonl(p->server_ip);
-    p->server_port = htons(p->server_port);
-    // p->server_network = htonl(p->server_network);
-    // p->server_netmask = htonl(p->server_netmask);
+    p->server_ip = hton_ip(p->server_ip);
+    p->server_port = hton_port(p->server_port);
+    p->server_network = hton_ip(p->server_network);
+    p->server_netmask = hton_ip(p->server_netmask);
 }
 
 void minivpn_to_network_byte_order(minivpn_packet *pkt)
@@ -130,18 +131,18 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
 
 static void client_handshake_to_host_byte_order(minivpn_pkt_client_handshake *p)
 {
-    // p->client_ip = ntohl(p->client_ip);
-    p->client_port = ntohs(p->client_port);
-    // p->client_network = ntohl(p->client_network);
-    // p->client_netmask = ntohl(p->client_netmask);
+    p->client_ip = ntoh_ip(p->client_ip);
+    p->client_port = ntoh_port(p->client_port);
+    p->client_network = ntoh_ip(p->client_network);
+    p->client_netmask = ntoh_ip(p->client_netmask);
 }
 
 static void server_handshake_to_host_byte_order(minivpn_pkt_server_handshake *p)
 {
-    // p->server_ip = ntohl(p->server_ip);
-    p->server_port = ntohs(p->server_port);
-    // p->server_network = ntohl(p->server_network);
-    // p->server_netmask = ntohl(p->server_netmask);
+    p->server_ip = ntoh_ip(p->server_ip);
+    p->server_port = ntoh_port(p->server_port);
+    p->server_network = ntoh_ip(p->server_network);
+    p->server_netmask = ntoh_ip(p->server_netmask);
 }
 
 void minivpn_to_host_byte_order(minivpn_packet *pkt)
@@ -167,7 +168,7 @@ bool minivpn_send_raw(SSL *ssl, uint16_t type, const void *data, size_t data_len
   pkt.type = type;
   pkt.length = data_len;
 
-  debug("sending packet type=%" PRIu16 ", length=%zu", pkt.type, pkt.length);
+  debug("sending packet type=%" PRIu16 ", length=%" PRIu32 "\n", pkt.type, pkt.length);
 
   if (data) {
     memcpy(&pkt.data, data, pkt.length);
@@ -207,7 +208,7 @@ bool minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
   }
   minivpn_to_host_byte_order(&pkt);
 
-  debug("received packet type=%" PRIu16 ", length=%zu", pkt.type, pkt.length);
+  debug("received packet type=%" PRIu16 ", length=%" PRIu32 "\n", pkt.type, pkt.length);
   if (pkt.type != type) {
     debug("received wrong packet type %" PRIu16 " (expected %" PRIu16 ")\n", pkt.type, type);
     return false;

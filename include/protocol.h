@@ -4,6 +4,7 @@
 
 #include <openssl/ssl.h>
 
+#include "inet.h"
 #include "tunnel.h"
 
 #define MINIVPN_DATA_SIZE 500
@@ -36,27 +37,27 @@ typedef struct {
  */
 
 typedef struct {
-  unsigned char key[TUNNEL_KEY_SIZE];
-  unsigned char iv[TUNNEL_IV_SIZE];
-  uint32_t      client_ip;
-  uint16_t      client_port;
-  uint32_t      client_network;
-  uint32_t      client_netmask;
+  unsigned char  key[TUNNEL_KEY_SIZE];
+  unsigned char  iv[TUNNEL_IV_SIZE];
+  in_addr_t      client_ip;
+  in_port_t      client_port;
+  in_addr_t      client_network;
+  in_addr_t      client_netmask;
 } minivpn_pkt_client_handshake;
 
 typedef struct {
-  uint32_t    server_ip;
-  uint16_t    server_port;
-  uint32_t    server_network;
-  uint32_t    server_netmask;
+  in_addr_t    server_ip;
+  in_port_t    server_port;
+  in_addr_t    server_network;
+  in_addr_t    server_netmask;
 } minivpn_pkt_server_handshake;
 
 tunnel *minivpn_client_handshake(SSL *ssl, const unsigned char *key, const unsigned char *iv,
-                                 uint32_t client_ip, uint16_t client_port,
-                                 uint32_t client_network, uint32_t client_netmask);
+                                 in_addr_t client_ip, in_port_t client_port,
+                                 in_addr_t client_network, in_addr_t client_netmask);
 
-tunnel *minivpn_server_handshake(SSL *ssl, uint32_t server_ip, uint16_t server_port,
-                                 uint32_t server_network, uint32_t server_netmask);
+tunnel *minivpn_server_handshake(SSL *ssl, in_addr_t server_ip, in_port_t server_port,
+                                 in_addr_t server_network, in_addr_t server_netmask);
 
 /*
  * Low-level communication

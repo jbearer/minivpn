@@ -16,13 +16,14 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#include "inet.h"
 #include "tunnel.h"
 
 #define BUFFER_SIZE 2000
 #define HMAC_SIZE (256/8)
 
 #ifdef DEBUG
-#define tunnel_debug(t, fmt, ...) fprintf(stderr, "tunnel %" PRId64 ": " fmt, t->dev, __VA_ARGS__);
+#define tunnel_debug(t, fmt, ...) fprintf(stderr, "tunnel %" PRId64 ": " fmt, t->dev, ##__VA_ARGS__);
 #else
 #define tunnel_debug(...)
 #endif
@@ -217,15 +218,15 @@ static void tunnel_unroute(tunnel *t)
   tunnel_debug(t, "deleted route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
 }
 
-bool tunnel_route(tunnel *t, int network, int netmask)
+bool tunnel_route(tunnel *t, in_addr_t network, in_addr_t netmask)
 {
   char network_str[INET_ADDRSTRLEN];
   char netmask_str[INET_ADDRSTRLEN];
   struct in_addr addr;
 
-  addr.s_addr = network;
+  addr.s_addr = hton_ip(network);
   inet_ntop(AF_INET, &addr, network_str, INET_ADDRSTRLEN);
-  addr.s_addr = netmask;
+  addr.s_addr = hton_ip(netmask);
   inet_ntop(AF_INET, &addr, netmask_str, INET_ADDRSTRLEN);
 
 
@@ -252,8 +253,8 @@ bool tunnel_route(tunnel *t, int network, int netmask)
   return true;
 }
 
-tunnel *tunnel_new(
-  const unsigned char *key, const unsigned char *iv, int peer_ip, int peer_port, int local_port)
+tunnel *tunnel_new(const unsigned char *key, const unsigned char *iv,
+                   in_addr_t peer_ip, in_port_t peer_port, in_port_t local_port)
 {
   init_module();
 
@@ -307,20 +308,20 @@ tunnel *tunnel_new(
 
   memset(&t->sin_local, 0, sizeof(t->sin_local));
   t->sin_local.sin_family = AF_INET;
-  t->sin_local.sin_addr.s_addr = htonl(INADDR_ANY);
-  t->sin_local.sin_port = htons(local_port);
+  t->sin_local.sin_addr.s_addr = hton_ip(INADDR_ANY);
+  t->sin_local.sin_port = hton_port(local_port);
   if (bind(t->net_fd, (struct sockaddr*)&t->sin_local, sizeof(t->sin_local)) < 0){
     perror("bind");
     goto err_bind;
   }
-  tunnel_debug(t, "bound to port %d\n", local_port);
+  tunnel_debug(t, "bound to port %" PRIport "\n", local_port);
 
   // Assign the destination address
   memset(&t->sin_remote, 0, sizeof(t->sin_remote));
   t->sin_remote.sin_family = AF_INET;
-  t->sin_remote.sin_addr.s_addr = htonl(peer_ip);
-  t->sin_remote.sin_port = htons(peer_port);
-  tunnel_debug(t, "peer at %d:%d\n", peer_ip, peer_port);
+  t->sin_remote.sin_addr.s_addr = hton_ip(peer_ip);
+  t->sin_remote.sin_port = hton_port(peer_port);
+  tunnel_debug(t, "peer at %" PRIip ":%" PRIport "\n", peer_ip, peer_port);
 
   return t;
 
@@ -339,6 +340,8 @@ err_pkey:
 
 void tunnel_delete(tunnel *t)
 {
+  tunnel_debug(t, "closing\n");
+
   tunnel_stop(t);
   tunnel_unroute(t);
   ifdown(t);

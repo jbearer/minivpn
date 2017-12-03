@@ -16,7 +16,7 @@ CC_FLAGS = -Wall -Wextra -Werror -std=gnu99 $(INCLUDE_DIRS)
 SSL_LIBS = -lssl -lcrypto
 
 ifdef SIMPLETUN_DEBUG
-CC_FLAGS += -DDEBUG
+CC_FLAGS += -DDEBUG -g
 endif
 
 ifndef SIMPLETUN_BINARY_DIR

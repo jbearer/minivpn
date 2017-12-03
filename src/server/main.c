@@ -13,10 +13,11 @@
 #include <openssl/err.h>
 
 #include "debug.h"
+#include "inet.h"
 #include "protocol.h"
 #include "tunnel.h"
 
-static int udp_port = 55555;
+static in_port_t udp_port = 55555;
 static char cert_file[100];
 static char pkey_file[100];
 
@@ -32,7 +33,7 @@ static void close_ssl()
   ERR_free_strings();
 }
 
-static int open_socket(int port)
+static int open_socket(in_port_t port)
 {
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
   if (sockfd < 0) {
@@ -50,8 +51,8 @@ static int open_socket(int port)
   struct sockaddr_in sin;
   bzero(&sin, sizeof(sin));
   sin.sin_family = AF_INET;
-  sin.sin_addr.s_addr = htonl(INADDR_ANY);
-  sin.sin_port = htons(port);
+  sin.sin_addr.s_addr = hton_ip(INADDR_ANY);
+  sin.sin_port = hton_port(port);
 
   if (bind(sockfd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
     perror("bind");
@@ -88,7 +89,7 @@ static void *in_band_loop(void *void_arg)
 }
 
 static void accept_client(
-  int sockfd, uint32_t server_ip, uint32_t server_network, uint32_t server_netmask)
+  int sockfd, in_addr_t server_ip, in_addr_t server_network, in_addr_t server_netmask)
 {
   struct sockaddr_in sin;
   socklen_t sinlen = sizeof(sin);
@@ -101,7 +102,7 @@ static void accept_client(
 #ifdef DEBUG
   char client_ip_str[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &sin.sin_addr, client_ip_str, INET_ADDRSTRLEN);
-  uint16_t client_tcp_port = ntohs(sin.sin_port);
+  uint16_t client_tcp_port = ntoh_port(sin.sin_port);
 #endif
   debug("accepted connection from %s:%" PRIu16 "\n", client_ip_str, client_tcp_port);
 
@@ -205,10 +206,11 @@ static void usage(const char *progname)
 
 int main(int argc, char **argv)
 {
-  int port = 55555;
-  int server_ip;
-  int network = -1;
-  int netmask = 0xffffffff;
+  in_port_t port = 55555;
+  in_addr_t server_ip;
+  bool      network_set = false;
+  in_addr_t network;
+  in_addr_t netmask = -1;
 
   struct option long_options[] =
   {
@@ -225,10 +227,11 @@ int main(int argc, char **argv)
   while((option = getopt_long(argc, argv, "hn:m:t:u:", long_options, &option_index)) > 0) {
     switch(option) {
     case 'n':
-      network = inet_addr(optarg);
+      network = ntoh_ip(inet_addr(optarg));
+      network_set = true;
       break;
     case 'm':
-      netmask = inet_addr(optarg);
+      netmask = ntoh_ip(inet_addr(optarg));
       break;
     case 'p':
       port = atoi(optarg);
@@ -246,8 +249,8 @@ int main(int argc, char **argv)
     usage(argv[0]);
   }
 
-  server_ip = inet_addr(argv[optind++]);
-  if (network == -1) {
+  server_ip = ntoh_ip(inet_addr(argv[optind++]));
+  if (!network_set) {
     network = server_ip;
   }
   strncpy(cert_file, argv[optind++], 99);
