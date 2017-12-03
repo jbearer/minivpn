@@ -224,7 +224,6 @@ static void usage(const char *progname)
   exit(1);
 }
 
-
 int main(int argc, char **argv)
 {
   int port = 55555;

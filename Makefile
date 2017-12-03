@@ -40,10 +40,11 @@ ifndef SIMPLETUN_IV
 SIMPLETUN_IV = $(SIMPLETUN_BINARY_DIR)/iv
 endif
 
-all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun server
+all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun server client
 
 clean:
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/minivpn-serverd
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/minivpn-clientd
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/simpletun
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/key
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/iv
@@ -66,6 +67,11 @@ $(SIMPLETUN_BINARY_DIR)/simpletun: src/simpletun.c $(SIMPLETUN_BINARY_DIR)/tunne
 server: $(SIMPLETUN_BINARY_DIR)/minivpn-serverd
 $(SIMPLETUN_BINARY_DIR)/minivpn-serverd: \
 	src/server/main.c $(SIMPLETUN_BINARY_DIR)/tunnel.o $(SIMPLETUN_BINARY_DIR)/protocol.o
+	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
+
+client: $(SIMPLETUN_BINARY_DIR)/minivpn-clientd
+$(SIMPLETUN_BINARY_DIR)/minivpn-clientd: \
+	src/client/main.c $(SIMPLETUN_BINARY_DIR)/tunnel.o $(SIMPLETUN_BINARY_DIR)/protocol.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 
 tunnel: simpletun simpletun_net simpletun_peer stop_tunnel $(SIMPLETUN_LOGS_DIR) $(SIMPLETUN_KEY) $(SIMPLETUN_IV)
