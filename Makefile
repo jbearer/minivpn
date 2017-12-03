@@ -8,8 +8,14 @@
 # SIMPLETUN_LOCAL_PORT 	-- UDP port of outgoing packets (default 55555)
 # SIMPLETUN_NET  		-- Private network IP (mandatory)
 
+INCLUDE_DIRS = -Iinclude
+
 CC = gcc
-CC_FLAGS = -Wall -Wextra -Werror -std=gnu99
+CC_FLAGS = -Wall -Wextra -Werror -std=gnu99 $(INCLUDE_DIRS)
+
+ifdef SIMPLETUN_DEBUG
+CC_FLAGS += -DDEBUG
+endif
 
 ifndef SIMPLETUN_BINARY_DIR
 SIMPLETUN_BINARY_DIR = build
@@ -35,22 +41,28 @@ endif
 all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun
 
 clean:
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/{simpletun,key,iv}
-	rm -f ./$(SIMPLETUN_LOGS_DIR)/{*.out,*.err}
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/simpletun
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/key
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/iv
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/*.o
+	rm -f ./$(SIMPLETUN_LOGS_DIR)/*.out
+	rm -f ./$(SIMPLETUN_LOGS_DIR)/*.err
 	rmdir $(SIMPLETUN_BINARY_DIR)
 	rmdir $(SIMPLETUN_LOGS_DIR)
 
+$(SIMPLETUN_BINARY_DIR)/tunnel.o: src/tunnel.c include/tunnel.h $(SIMPLETUN_BINARY_DIR)
+	$(CC) $(CC_FLAGS) -c -o $@ $< -lssl -lcrypto
+
 simpletun: $(SIMPLETUN_BINARY_DIR)/simpletun
-$(SIMPLETUN_BINARY_DIR)/simpletun: src/simpletun.c $(SIMPLETUN_BINARY_DIR)
-	$(CC) $(CC_FLAGS) -o $@ $< -lssl -lcrypto
+$(SIMPLETUN_BINARY_DIR)/simpletun: src/simpletun.c $(SIMPLETUN_BINARY_DIR)/tunnel.o
+	$(CC) $(CC_FLAGS) -o $@ $^ -lssl -lcrypto
 
 tunnel: simpletun simpletun_net simpletun_peer stop_tunnel $(SIMPLETUN_LOGS_DIR) $(SIMPLETUN_KEY) $(SIMPLETUN_IV)
-	$(SIMPLETUN_BINARY_DIR)/simpletun -v -i tun0 --port $(SIMPLETUN_LOCAL_PORT) \
+	$(SIMPLETUN_BINARY_DIR)/simpletun --port $(SIMPLETUN_LOCAL_PORT) \
 		--peer-ip $(SIMPLETUN_PEER) --peer-port $(SIMPLETUN_PEER_PORT) \
 		--encryption-key $(SIMPLETUN_KEY) --encryption-iv $(SIMPLETUN_IV) \
+		--network $(SIMPLETUN_NET) --netmask 255.255.255.0 \
 		> $(SIMPLETUN_LOGS_DIR)/simpletun.out 2> $(SIMPLETUN_LOGS_DIR)/simpletun.err &
-	ifconfig tun0 up
-	route add -net $(SIMPLETUN_NET) netmask 255.255.255.0 dev tun0
 
 stop_tunnel:
 	killall -q -9 simpletun || true # killall returns 1 if no processes were killed
