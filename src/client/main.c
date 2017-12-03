@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -10,7 +12,14 @@
 #include <openssl/err.h>
 
 #include "protocol.h"
+#include "ssl.h"
 #include "tunnel.h"
+
+#ifdef DEBUG
+#define debug(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define debug(...)
+#endif
 
 static int udp_port = 55555;
 
@@ -23,9 +32,7 @@ static void init_ssl()
 
 static void close_ssl()
 {
-  SSL_load_error_strings();
-  SSL_library_init();
-  OpenSSL_add_all_algorithms();
+  ERR_free_strings();
 }
 
 static bool send_oob(SSL *ssl, const minivpn_packet *pkt)
@@ -57,7 +64,7 @@ typedef struct {
 } session;
 
 static session *session_new(const unsigned char *key, const unsigned char *iv,
-                            int server_ip, int server_port, int client_ip, int network, int netmask)
+                            int server_ip, uint16_t server_port, int client_ip, int network, int netmask)
 {
   session *s = (session *)malloc(sizeof(session));
   if (s == NULL) {
@@ -74,11 +81,16 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
   struct sockaddr_in sin;
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = server_ip;
-  sin.sin_port = htonl(server_port);
+  sin.sin_port = htons(server_port);
   if (connect(sockfd, (const struct sockaddr *)&sin, sizeof(sin)) < 0) {
     perror("connect");
     goto err_connect;
   }
+#ifdef DEBUG
+  char server_ip_str[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &sin.sin_addr, server_ip_str, INET_ADDRSTRLEN);
+  debug("connected to %s:%" PRIu16 "\n", server_ip_str, server_port);
+#endif
 
   s->ctx = SSL_CTX_new(SSLv23_client_method());
   if (s->ctx == NULL) {
@@ -98,12 +110,14 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
     goto err_set_fd;
   }
 
+  debug("beginning SSL handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
   int err = SSL_connect(s->ssl);
   if (err != 1) {
-    fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(s->ssl, err), NULL));
+    ERR_print_errors_fp(stderr);
     goto err_ssl_connect;
   }
 
+  debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
   minivpn_packet pkt;
   pkt.type = MINIVPN_INIT_SESSION;
   pkt.length = sizeof(minivpn_init_session);
@@ -115,9 +129,11 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
   init->client_network = network;
   init->client_netmask = netmask;
   if (!send_oob(s->ssl, &pkt)) {
+    debug("unable to send session initialization packet\n");
     goto err_send_init;
   }
 
+  debug("session activated with %s:%" PRIu16 "\n", server_ip_str, server_port);
   return s;
 
 err_send_init:
@@ -133,6 +149,7 @@ err_connect:
 err_socket:
   free(s);
 err_malloc:
+  debug("unable to activate session\n");
   return NULL;
 }
 
@@ -191,14 +208,14 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != option_index + 4) {
+  if (argc != optind + 4) {
     usage(argv[0]);
   }
 
-  server_ip = inet_addr(argv[option_index++]);
-  client_ip = inet_addr(argv[option_index++]);
-  network = atoi(argv[option_index++]);
-  netmask = atoi(argv[option_index++]);
+  server_ip = inet_addr(argv[optind++]);
+  client_ip = inet_addr(argv[optind++]);
+  network = atoi(argv[optind++]);
+  netmask = atoi(argv[optind++]);
 
   init_ssl();
 

@@ -494,7 +494,7 @@ static void tap_to_net(tunnel *t) {
   }
 
   t->tap_to_net_count++;
-  tunnel_debug(t, "TAP2NET %zu: Read %d bytes from the tap interface\n", t->tap_to_net_count, nbytes);
+  tunnel_debug(t, "TAP2NET %zu: Read %zd bytes from the tap interface\n", t->tap_to_net_count, nbytes);
 
   unsigned char packet[BUFFER_SIZE];
   unsigned char *hmac = packet;
@@ -520,7 +520,7 @@ static void tap_to_net(tunnel *t) {
     return;
   }
 
-  tunnel_debug(t, "TAP2NET %zu: Written %d bytes to the network\n", t->tap_to_net_count, nwrite);
+  tunnel_debug(t, "TAP2NET %zu: Written %zd bytes to the network\n", t->tap_to_net_count, nwrite);
 }
 
 static void net_to_tap(tunnel *t) {
@@ -537,7 +537,7 @@ static void net_to_tap(tunnel *t) {
     exit(0);
   }
   t->net_to_tap_count++;
-  tunnel_debug(t, "NET2TAP %zu: Read %d bytes from the network\n", t->net_to_tap_count, nbytes);
+  tunnel_debug(t, "NET2TAP %zu: Read %zd bytes from the network\n", t->net_to_tap_count, nbytes);
 
   unsigned char *hmac = packet;
   unsigned char *cipher = packet + HMAC_SIZE;
@@ -563,7 +563,7 @@ static void net_to_tap(tunnel *t) {
     perror("write");
     return;
   }
-  tunnel_debug(t, "NET2TAP %zu: Written %d bytes to the tap interface\n", t->net_to_tap_count, nwrite);
+  tunnel_debug(t, "NET2TAP %zu: Written %zd bytes to the tap interface\n", t->net_to_tap_count, nwrite);
 }
 
 void tunnel_loop(tunnel *t)

@@ -1,7 +1,9 @@
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -11,6 +13,7 @@
 #include <openssl/err.h>
 
 #include "protocol.h"
+#include "ssl.h"
 #include "tunnel.h"
 
 #ifdef DEBUG
@@ -32,9 +35,7 @@ static void init_ssl()
 
 static void close_ssl()
 {
-  SSL_load_error_strings();
-  SSL_library_init();
-  OpenSSL_add_all_algorithms();
+  ERR_free_strings();
 }
 
 static int open_socket(int port)
@@ -114,12 +115,19 @@ static void *in_band_loop(void *void_arg)
 static void accept_client(int sockfd)
 {
   struct sockaddr_in sin;
-  socklen_t sinlen;
+  socklen_t sinlen = sizeof(sin);
   int conn = accept(sockfd, (struct sockaddr *)&sin, &sinlen);
   if (conn < 0) {
     perror("accept");
     goto err_accept;
   }
+
+#ifdef DEBUG
+  char client_ip_str[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &sin.sin_addr, client_ip_str, INET_ADDRSTRLEN);
+  uint16_t client_tcp_port = ntohs(sin.sin_port);
+#endif
+  debug("accepted connection from %s:%" PRIu16 "\n", client_ip_str, client_tcp_port);
 
   SSL_CTX *ctx = SSL_CTX_new(SSLv23_server_method());
   if (ctx == NULL) {
@@ -148,11 +156,13 @@ static void accept_client(int sockfd)
     goto err_set_fd;
   }
 
+  debug("beginning SSL handshake with %s:%" PRIu16 "\n", client_ip_str, client_tcp_port);
   int err = SSL_accept(ssl);
   if (err != 1) {
-    fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, err), NULL));
+    ERR_print_errors_fp(stderr);
     goto err_ssl_accept;
   }
+  debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", client_ip_str, client_tcp_port);
 
   minivpn_packet pkt;
   if (!recv_oob(ssl, &pkt) || pkt.type != MINIVPN_INIT_SESSION) {
@@ -163,10 +173,12 @@ static void accept_client(int sockfd)
   minivpn_init_session *init = (minivpn_init_session *)pkt.data;
   tunnel *tun = tunnel_new(init->key, init->iv, init->client_ip, init->client_port, udp_port++);
   if (tun == NULL) {
+    fprintf(stderr, "could not create tunnel\n");
     goto err_tunnel_new;
   }
 
   if (tunnel_route(tun, init->client_network, init->client_netmask)) {
+    fprintf(stderr, "could not route tunnel\n");
     goto err_tunnel_route;
   }
 
@@ -185,7 +197,7 @@ static void accept_client(int sockfd)
     goto err_in_band_thread_detach;
   }
 
-  debug("successfully launched client");
+  debug("successfully launched client\n");
 
   return;
 
@@ -209,6 +221,7 @@ err_use_cert:
 err_ctx_new:
   close(conn);
 err_accept:
+  debug("failed to launch client");
   return;
 }
 
@@ -252,12 +265,12 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != option_index + 2) {
+  if (argc != optind + 2) {
     usage(argv[0]);
   }
 
-  strncpy(cert_file, argv[option_index++], 99);
-  strncpy(pkey_file, argv[option_index++], 99);
+  strncpy(cert_file, argv[optind++], 99);
+  strncpy(pkey_file, argv[optind++], 99);
 
   init_ssl();
 
@@ -266,6 +279,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  debug("listening on port %d\n", port);
   while (true) {
     accept_client(sockfd);
   }
