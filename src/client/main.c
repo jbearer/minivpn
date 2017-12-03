@@ -11,17 +11,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "debug.h"
 #include "protocol.h"
-#include "ssl.h"
 #include "tunnel.h"
-
-#ifdef DEBUG
-#define debug(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define debug(...)
-#endif
-
-static int udp_port = 55555;
 
 static void init_ssl()
 {
@@ -35,28 +27,6 @@ static void close_ssl()
   ERR_free_strings();
 }
 
-static bool send_oob(SSL *ssl, const minivpn_packet *pkt)
-{
-  minivpn_packet pktn;
-  memcpy(&pktn, pkt, sizeof(minivpn_packet));
-  minivpn_to_network_byte_order(&pktn);
-
-  const char *buf = (const char *)&pktn;
-  size_t togo = sizeof(minivpn_packet);
-  while (togo > 0) {
-    int ret = SSL_write(ssl, buf, togo);
-    if (ret > 0) {
-      togo -= ret;
-      buf += ret;
-    } else {
-      fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, ret), NULL));
-      return false;
-    }
-  }
-
-  return true;
-}
-
 typedef struct {
   SSL_CTX *ctx;
   SSL *ssl;
@@ -64,7 +34,9 @@ typedef struct {
 } session;
 
 static session *session_new(const unsigned char *key, const unsigned char *iv,
-                            int server_ip, uint16_t server_port, int client_ip, int network, int netmask)
+                            int server_ip, uint16_t server_port,
+                            int client_ip, uint16_t client_port,
+                            int network, int netmask)
 {
   session *s = (session *)malloc(sizeof(session));
   if (s == NULL) {
@@ -97,7 +69,7 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
     ERR_print_errors_fp(stderr);
     goto err_ctx_new;
   }
-  SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, NULL);
+  // SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, NULL);
 
   s->ssl = SSL_new(s->ctx);
   if (s->ssl == NULL) {
@@ -118,25 +90,16 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
   }
 
   debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
-  minivpn_packet pkt;
-  pkt.type = MINIVPN_INIT_SESSION;
-  pkt.length = sizeof(minivpn_init_session);
-  minivpn_init_session *init = (minivpn_init_session *)pkt.data;
-  memcpy(&init->key, key, TUNNEL_KEY_SIZE);
-  memcpy(&init->iv, iv, TUNNEL_IV_SIZE);
-  init->client_ip = client_ip;
-  init->client_port = udp_port++;
-  init->client_network = network;
-  init->client_netmask = netmask;
-  if (!send_oob(s->ssl, &pkt)) {
-    debug("unable to send session initialization packet\n");
-    goto err_send_init;
+  s->tun = minivpn_client_handshake(s->ssl, key, iv, client_ip, client_port, network, netmask);
+  if (s->tun == NULL) {
+    debug("minivpn handshake failed\n");
+    goto err_minivpn_handshake;
   }
 
   debug("session activated with %s:%" PRIu16 "\n", server_ip_str, server_port);
   return s;
 
-err_send_init:
+err_minivpn_handshake:
   SSL_shutdown(s->ssl);
 err_ssl_connect:
 err_set_fd:
@@ -168,7 +131,7 @@ static void usage(const char *progname)
   fprintf(stderr, "%s [options] <server-ip> <client-ip> <network> <netmask>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
-  fprintf(stderr, "-u, --udp-port <port>: beginning of port range to use for UDP tunnels (default 55555)\n");
+  fprintf(stderr, "-u, --udp-port <port>: port to use for UDP tunnel (default 55555)\n");
   fprintf(stderr, "-p, --server-port <port>: TCP server port (default 55555)\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
   exit(1);
@@ -179,6 +142,7 @@ int main(int argc, char **argv)
   unsigned char key[TUNNEL_KEY_SIZE];
   unsigned char iv[TUNNEL_IV_SIZE];
   int server_port = 55555;
+  int udp_port = 55555;
   int server_ip;
   int client_ip;
   int network;
@@ -219,7 +183,7 @@ int main(int argc, char **argv)
 
   init_ssl();
 
-  session *s = session_new(key, iv, server_ip, server_port, client_ip, network, netmask);
+  session *s = session_new(key, iv, server_ip, server_port, client_ip, udp_port, network, netmask);
   if (s == NULL) {
     return 1;
   }

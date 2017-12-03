@@ -12,15 +12,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "debug.h"
 #include "protocol.h"
-#include "ssl.h"
 #include "tunnel.h"
-
-#ifdef DEBUG
-#define debug(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define debug(...)
-#endif
 
 static int udp_port = 55555;
 static char cert_file[100];
@@ -72,25 +66,6 @@ static int open_socket(int port)
   return sockfd;
 }
 
-static bool recv_oob(SSL *ssl, minivpn_packet *pkt)
-{
-  char *buf = (char *)pkt;
-  size_t togo = sizeof(minivpn_packet);
-  while (togo > 0) {
-    int ret = SSL_read(ssl, buf, togo);
-    if (ret > 0) {
-      togo -= ret;
-      buf += ret;
-    } else {
-      fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, ret), NULL));
-      return false;
-    }
-  }
-
-  minivpn_to_host_byte_order(pkt);
-  return true;
-}
-
 typedef struct {
   SSL_CTX *ctx;
   SSL *ssl;
@@ -112,7 +87,8 @@ static void *in_band_loop(void *void_arg)
   return NULL;
 }
 
-static void accept_client(int sockfd)
+static void accept_client(
+  int sockfd, uint32_t server_ip, uint32_t server_network, uint32_t server_netmask)
 {
   struct sockaddr_in sin;
   socklen_t sinlen = sizeof(sin);
@@ -162,24 +138,15 @@ static void accept_client(int sockfd)
     ERR_print_errors_fp(stderr);
     goto err_ssl_accept;
   }
-  debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", client_ip_str, client_tcp_port);
+  debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n",
+    client_ip_str, client_tcp_port);
 
-  minivpn_packet pkt;
-  if (!recv_oob(ssl, &pkt) || pkt.type != MINIVPN_INIT_SESSION) {
-    fprintf(stderr, "unable to read session initialization packet\n");
-    goto err_init_session;
-  }
-
-  minivpn_init_session *init = (minivpn_init_session *)pkt.data;
-  tunnel *tun = tunnel_new(init->key, init->iv, init->client_ip, init->client_port, udp_port++);
+  tunnel *tun = minivpn_server_handshake(ssl, server_ip, udp_port++, server_network, server_netmask);
   if (tun == NULL) {
-    fprintf(stderr, "could not create tunnel\n");
-    goto err_tunnel_new;
-  }
-
-  if (tunnel_route(tun, init->client_network, init->client_netmask)) {
-    fprintf(stderr, "could not route tunnel\n");
-    goto err_tunnel_route;
+    debug("minivpn handshake failed\n");
+    goto err_minivpn_handshake;
+  } else {
+    debug("minivpn handshake succeeded\n");
   }
 
   pthread_t in_band_thread;
@@ -206,10 +173,7 @@ err_in_band_thread_detach:
   pthread_join(in_band_thread, NULL);
 err_in_band_thread_create:
   free(ibarg);
-err_tunnel_route:
-  tunnel_delete(tun);
-err_tunnel_new:
-err_init_session:
+err_minivpn_handshake:
   SSL_shutdown(ssl);
 err_ssl_accept:
 err_set_fd:
@@ -221,16 +185,18 @@ err_use_cert:
 err_ctx_new:
   close(conn);
 err_accept:
-  debug("failed to launch client");
+  debug("failed to launch client\n");
   return;
 }
 
 static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <cert-file> <pkey-file>\n", progname);
+  fprintf(stderr, "%s [options] <server-ip> <cert-file> <pkey-file>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
+  fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
+  fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
   fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
   fprintf(stderr, "-u, --udp-port <port>: beginning of port range to use for UDP tunnels (default 55555)\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
@@ -240,10 +206,15 @@ static void usage(const char *progname)
 int main(int argc, char **argv)
 {
   int port = 55555;
+  int server_ip;
+  int network = -1;
+  int netmask = 0xffffffff;
 
   struct option long_options[] =
   {
     {"help",      no_argument,       0, 'h'},
+    {"network",   required_argument, 0, 'n'},
+    {"netmask",   required_argument, 0, 'm'},
     {"tcp-port",  required_argument, 0, 't'},
     {"udp-port",  required_argument, 0, 'u'},
     {0, 0, 0, 0}
@@ -251,8 +222,14 @@ int main(int argc, char **argv)
 
   char option;
   int option_index = 0;
-  while((option = getopt_long(argc, argv, "ht:u:", long_options, &option_index)) > 0) {
+  while((option = getopt_long(argc, argv, "hn:m:t:u:", long_options, &option_index)) > 0) {
     switch(option) {
+    case 'n':
+      network = inet_addr(optarg);
+      break;
+    case 'm':
+      netmask = inet_addr(optarg);
+      break;
     case 'p':
       port = atoi(optarg);
       break;
@@ -265,10 +242,14 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != optind + 2) {
+  if (argc != optind + 3) {
     usage(argv[0]);
   }
 
+  server_ip = inet_addr(argv[optind++]);
+  if (network == -1) {
+    network = server_ip;
+  }
   strncpy(cert_file, argv[optind++], 99);
   strncpy(pkey_file, argv[optind++], 99);
 
@@ -281,7 +262,7 @@ int main(int argc, char **argv)
 
   debug("listening on port %d\n", port);
   while (true) {
-    accept_client(sockfd);
+    accept_client(sockfd, server_ip, network, netmask);
   }
 
   close(sockfd);
