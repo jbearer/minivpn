@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -9,7 +10,7 @@
 
 #include "tunnel.h"
 
-void read_key(const char *file, unsigned char *key)
+static void read_key(const char *file, unsigned char *key)
 {
   int fd = open(file, O_RDONLY);
   if (fd == -1) {
@@ -34,7 +35,7 @@ void read_key(const char *file, unsigned char *key)
   }
 }
 
-void read_iv(const char *file, unsigned char *iv)
+static void read_iv(const char *file, unsigned char *iv)
 {
   int fd = open(file, O_RDONLY);
   if (fd == -1) {
@@ -62,7 +63,7 @@ void read_iv(const char *file, unsigned char *iv)
 /**************************************************************************
  * usage: prints usage and exits.                                         *
  **************************************************************************/
-void usage(const char *progname)
+static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");
   fprintf(stderr, "%s -i <IP> -n <IP> [options]\n", progname);
@@ -145,13 +146,13 @@ int main(int argc, char *argv[])
     usage(argv[0]);
   }
 
-  tunnel *tun = tunnel_new(key, iv, remote_ip, remote_port, local_port);
+  tunnel *tun = tunnel_new(key, iv, inet_addr(remote_ip), remote_port, local_port);
   if (!tun) {
     fprintf(stderr, "unable to open tunnel\n");
     return 1;
   }
 
-  if (!tunnel_route(tun, network, netmask)) {
+  if (!tunnel_route(tun, inet_addr(network), inet_addr(netmask))) {
     fprintf(stderr, "unable to route tunnel\n");
     return 1;
   }

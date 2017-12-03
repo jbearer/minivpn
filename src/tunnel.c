@@ -32,13 +32,13 @@
 // Free device name bitmap
 static uint64_t _free_devices[MAX_TUNNELS / 64] = {(uint64_t)-1};
 
-void close_module()
+static void close_module()
 {
   ERR_free_strings();
   EVP_cleanup();
 }
 
-void init_module()
+static void init_module()
 {
   static bool first_call = true;
   if (!__sync_bool_compare_and_swap(&first_call, true, false)) {
@@ -51,7 +51,7 @@ void init_module()
   atexit(close_module);
 }
 
-int64_t alloc_dev()
+static int64_t alloc_dev()
 {
   for (size_t block = 0; block < MAX_TUNNELS / 64; ++block) {
     if (_free_devices[block]) {
@@ -67,7 +67,7 @@ int64_t alloc_dev()
   return -1;
 }
 
-void dealloc_dev(int64_t dev)
+static void dealloc_dev(int64_t dev)
 {
   size_t block = dev / 64;
   size_t bit = dev % 64;
@@ -75,7 +75,7 @@ void dealloc_dev(int64_t dev)
   _free_devices[block] |= mask;
 }
 
-int open_tunnel(char *dev)
+static int open_tunnel(char *dev)
 {
   struct ifreq ifr;
   int fd, err;
@@ -117,11 +117,11 @@ struct __tunnel {
   bool running;
   size_t tap_to_net_count;
   size_t net_to_tap_count;
-  char network[15];
-  char netmask[15];
+  char network[INET_ADDRSTRLEN + 1];
+  char netmask[INET_ADDRSTRLEN + 1];
 };
 
-bool isup(tunnel *t)
+static bool isup(tunnel *t)
 {
   int sockfd;
   struct ifreq ifr;
@@ -143,7 +143,7 @@ bool isup(tunnel *t)
   return !!(ifr.ifr_flags & IFF_UP);
 }
 
-bool ifup(tunnel *t)
+static bool ifup(tunnel *t)
 {
   int sockfd;
   struct ifreq ifr;
@@ -173,7 +173,7 @@ bool ifup(tunnel *t)
   return true;
 }
 
-bool ifdown(tunnel *t)
+static bool ifdown(tunnel *t)
 {
   int sockfd;
   struct ifreq ifr;
@@ -203,7 +203,7 @@ bool ifdown(tunnel *t)
   return true;
 }
 
-void tunnel_unroute(tunnel *t)
+static void tunnel_unroute(tunnel *t)
 {
   if (t->network[0] != '\0') {
     // HACK should replace this with an ioctl SIOCADDRT implementation
@@ -217,12 +217,22 @@ void tunnel_unroute(tunnel *t)
   tunnel_debug(t, "deleted route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
 }
 
-bool tunnel_route(tunnel *t, const char *network, const char *netmask)
+bool tunnel_route(tunnel *t, int network, int netmask)
 {
+  char network_str[INET_ADDRSTRLEN];
+  char netmask_str[INET_ADDRSTRLEN];
+  struct in_addr addr;
+
+  addr.s_addr = network;
+  inet_ntop(AF_INET, &addr, network_str, INET_ADDRSTRLEN);
+  addr.s_addr = netmask;
+  inet_ntop(AF_INET, &addr, netmask_str, INET_ADDRSTRLEN);
+
+
   bzero(t->network, sizeof(t->network));
   bzero(t->netmask, sizeof(t->netmask));
-  strncpy(t->network, network, 15);
-  strncpy(t->netmask, netmask, 15);
+  strncpy(t->network, network_str, INET_ADDRSTRLEN);
+  strncpy(t->netmask, netmask_str, INET_ADDRSTRLEN);
 
   tunnel_unroute(t);
 
@@ -232,21 +242,18 @@ bool tunnel_route(tunnel *t, const char *network, const char *netmask)
 
   // HACK should replace this with an ioctl SIOCADDRT implementation
   char comm[100] = {0};
-  sprintf(comm, "route add -net %s netmask %s dev tun%" PRId64 "\n", network, netmask, t->dev);
+  sprintf(comm, "route add -net %s netmask %s dev tun%" PRId64 "\n", t->network, t->netmask, t->dev);
   if (system(comm) != 0) {
-    tunnel_debug(t, "could not add route %s %s tun%" PRId64 "\n", network, netmask, t->dev);
+    tunnel_debug(t, "could not add route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
     return false;
   }
 
-  tunnel_debug(t, "added route %s %s tun%" PRId64 "\n", network, netmask, t->dev);
+  tunnel_debug(t, "added route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
   return true;
 }
 
-tunnel *tunnel_new(const unsigned char *key,
-           const unsigned char *iv,
-           const char *peer_ip,
-           int peer_port,
-           int local_port)
+tunnel *tunnel_new(
+  const unsigned char *key, const unsigned char *iv, int peer_ip, int peer_port, int local_port)
 {
   init_module();
 
@@ -311,9 +318,9 @@ tunnel *tunnel_new(const unsigned char *key,
   // Assign the destination address
   memset(&t->sin_remote, 0, sizeof(t->sin_remote));
   t->sin_remote.sin_family = AF_INET;
-  t->sin_remote.sin_addr.s_addr = inet_addr(peer_ip);
+  t->sin_remote.sin_addr.s_addr = htonl(peer_ip);
   t->sin_remote.sin_port = htons(peer_port);
-  tunnel_debug(t, "peer at %s:%d\n", peer_ip, peer_port);
+  tunnel_debug(t, "peer at %d:%d\n", peer_ip, peer_port);
 
   return t;
 
@@ -341,8 +348,8 @@ void tunnel_delete(tunnel *t)
   close(t->net_fd);
 }
 
-ssize_t encrypt(unsigned char *key, unsigned char *iv,
-                unsigned char *plaintext, int plaintext_len, unsigned char *ciphertext)
+static ssize_t encrypt(unsigned char *key, unsigned char *iv,
+                       unsigned char *plaintext, int plaintext_len, unsigned char *ciphertext)
 {
   EVP_CIPHER_CTX *ctx;
 
@@ -381,8 +388,8 @@ openssl_cleanup:
   return result;
 }
 
-ssize_t decrypt(unsigned char *key, unsigned char *iv,
-                unsigned char *ciphertext, int ciphertext_len, unsigned char *plaintext)
+static ssize_t decrypt(unsigned char *key, unsigned char *iv,
+                       unsigned char *ciphertext, int ciphertext_len, unsigned char *plaintext)
 {
   EVP_CIPHER_CTX *ctx;
 
@@ -426,7 +433,7 @@ openssl_cleanup:
  * Compute the SHA256 HMAC digest of msg and store it in hmac. hmac must point to an array of at
  * least HMAC_SIZE bytes.
  */
-int hmac_sign(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned char *hmac) {
+static int hmac_sign(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned char *hmac) {
   int result = 0;
 
   EVP_MD_CTX* ctx = EVP_MD_CTX_create();
@@ -468,7 +475,7 @@ openssl_cleanup:
  * Compute the SHA256 HMAC digest of msg and compare it to hmac. Returns 0 if digest matches,
  * 1 if digest does not match, or -1 if an error ocurred.
  */
-int hmac_verify(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned char *hmac) {
+static int hmac_verify(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned char *hmac) {
   unsigned char computed_hmac[HMAC_SIZE];
   if (hmac_sign(key, msg, msg_len, computed_hmac) < 0) {
     return -1;
@@ -477,7 +484,7 @@ int hmac_verify(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned char *h
   return !!memcmp(hmac, computed_hmac, HMAC_SIZE);
 }
 
-void tap_to_net(tunnel *t) {
+static void tap_to_net(tunnel *t) {
   unsigned char plain[BUFFER_SIZE];
 
   ssize_t nbytes = read(t->tap_fd, plain, BUFFER_SIZE);
@@ -516,7 +523,7 @@ void tap_to_net(tunnel *t) {
   tunnel_debug(t, "TAP2NET %zu: Written %d bytes to the network\n", t->tap_to_net_count, nwrite);
 }
 
-void net_to_tap(tunnel *t) {
+static void net_to_tap(tunnel *t) {
   unsigned char packet[BUFFER_SIZE];
 
   ssize_t nbytes = recvfrom(t->net_fd, packet, BUFFER_SIZE, 0, NULL, NULL);

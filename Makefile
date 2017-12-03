@@ -13,6 +13,8 @@ INCLUDE_DIRS = -Iinclude
 CC = gcc
 CC_FLAGS = -Wall -Wextra -Werror -std=gnu99 $(INCLUDE_DIRS)
 
+SSL_LIBS = -lssl -lcrypto
+
 ifdef SIMPLETUN_DEBUG
 CC_FLAGS += -DDEBUG
 endif
@@ -38,9 +40,10 @@ ifndef SIMPLETUN_IV
 SIMPLETUN_IV = $(SIMPLETUN_BINARY_DIR)/iv
 endif
 
-all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun
+all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun server
 
 clean:
+	rm -f ./$(SIMPLETUN_BINARY_DIR)/minivpn-serverd
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/simpletun
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/key
 	rm -f ./$(SIMPLETUN_BINARY_DIR)/iv
@@ -51,11 +54,19 @@ clean:
 	rmdir $(SIMPLETUN_LOGS_DIR)
 
 $(SIMPLETUN_BINARY_DIR)/tunnel.o: src/tunnel.c include/tunnel.h $(SIMPLETUN_BINARY_DIR)
-	$(CC) $(CC_FLAGS) -c -o $@ $< -lssl -lcrypto
+	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS)
+
+$(SIMPLETUN_BINARY_DIR)/protocol.o: src/protocol.c include/protocol.h $(SIMPLETUN_BINARY_DIR)
+	$(CC) $(CC_FLAGS) -c -o $@ $<
 
 simpletun: $(SIMPLETUN_BINARY_DIR)/simpletun
 $(SIMPLETUN_BINARY_DIR)/simpletun: src/simpletun.c $(SIMPLETUN_BINARY_DIR)/tunnel.o
-	$(CC) $(CC_FLAGS) -o $@ $^ -lssl -lcrypto
+	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS)
+
+server: $(SIMPLETUN_BINARY_DIR)/minivpn-serverd
+$(SIMPLETUN_BINARY_DIR)/minivpn-serverd: \
+	src/server/main.c $(SIMPLETUN_BINARY_DIR)/tunnel.o $(SIMPLETUN_BINARY_DIR)/protocol.o
+	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 
 tunnel: simpletun simpletun_net simpletun_peer stop_tunnel $(SIMPLETUN_LOGS_DIR) $(SIMPLETUN_KEY) $(SIMPLETUN_IV)
 	$(SIMPLETUN_BINARY_DIR)/simpletun --port $(SIMPLETUN_LOCAL_PORT) \
