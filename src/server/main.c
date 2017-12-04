@@ -20,6 +20,7 @@
 static in_port_t udp_port = 55555;
 static char cert_file[100];
 static char pkey_file[100];
+static char pkey_password[100] = "";
 
 static void init_ssl()
 {
@@ -123,6 +124,16 @@ static void *out_of_band_loop(void *void_arg)
   return NULL;
 }
 
+static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
+{
+  (void)rwflag;
+  (void)userdata;
+
+  bzero(buf, size);
+  strncpy(buf, pkey_password, size - 1);
+  return strlen(buf);
+}
+
 static void accept_client(
   int sockfd, in_addr_t server_ip, in_addr_t server_network, in_addr_t server_netmask)
 {
@@ -145,6 +156,9 @@ static void accept_client(
   if (ctx == NULL) {
     ERR_print_errors_fp(stderr);
     goto err_ctx_new;
+  }
+  if (pkey_password[0] != '\0') {
+    SSL_CTX_set_default_passwd_cb(ctx, pkey_password_cb);
   }
 
   if (SSL_CTX_use_certificate_file(ctx, cert_file, SSL_FILETYPE_PEM) != 1) {
@@ -255,6 +269,7 @@ static void usage(const char *progname)
   fprintf(stderr, "%s [options] <server-ip> <cert-file> <pkey-file>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
+  fprintf(stderr, "-p, --pkey-password <pword>: password for decrypting pkey-file\n");
   fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
   fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
   fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
@@ -273,18 +288,21 @@ int main(int argc, char **argv)
 
   struct option long_options[] =
   {
-    {"help",      no_argument,       0, 'h'},
-    {"network",   required_argument, 0, 'n'},
-    {"netmask",   required_argument, 0, 'm'},
-    {"tcp-port",  required_argument, 0, 't'},
-    {"udp-port",  required_argument, 0, 'u'},
+    {"help",          no_argument,       0, 'h'},
+    {"pkey-password", required_argument, 0, 'p'},
+    {"network",       required_argument, 0, 'n'},
+    {"netmask",       required_argument, 0, 'm'},
+    {"tcp-port",      required_argument, 0, 't'},
+    {"udp-port",      required_argument, 0, 'u'},
     {0, 0, 0, 0}
   };
 
   char option;
   int option_index = 0;
-  while((option = getopt_long(argc, argv, "hn:m:t:u:", long_options, &option_index)) > 0) {
+  while((option = getopt_long(argc, argv, "hp:n:m:t:u:", long_options, &option_index)) > 0) {
     switch(option) {
+    case 'p':
+      strncpy(pkey_password, optarg, 99);
     case 'n':
       network = ntoh_ip(inet_addr(optarg));
       network_set = true;
@@ -292,7 +310,7 @@ int main(int argc, char **argv)
     case 'm':
       netmask = ntoh_ip(inet_addr(optarg));
       break;
-    case 'p':
+    case 't':
       port = atoi(optarg);
       break;
     case 'u':
