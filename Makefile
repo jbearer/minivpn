@@ -19,9 +19,6 @@ ifdef SIMPLETUN_DEBUG
 CC_FLAGS += -DDEBUG -g
 endif
 
-ifndef SIMPLETUN_BINARY_DIR
-SIMPLETUN_BINARY_DIR = build
-endif
 ifndef SIMPLETUN_LOGS_DIR
 SIMPLETUN_LOGS_DIR = logs
 endif
@@ -34,48 +31,54 @@ SIMPLETUN_PEER_PORT = 55555
 endif
 
 ifndef SIMPLETUN_KEY
-SIMPLETUN_KEY = $(SIMPLETUN_BINARY_DIR)/key
+SIMPLETUN_KEY = bin/key
 endif
 ifndef SIMPLETUN_IV
-SIMPLETUN_IV = $(SIMPLETUN_BINARY_DIR)/iv
+SIMPLETUN_IV = bin/iv
 endif
 
-all: $(SIMPLETUN_BINARY_DIR) $(SIMPLETUN_LOGS_DIR) simpletun server client
+all: $(SIMPLETUN_LOGS_DIR) simpletun server client
 
 clean:
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/minivpn-serverd
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/minivpn-clientd
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/simpletun
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/key
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/iv
-	rm -f ./$(SIMPLETUN_BINARY_DIR)/*.o
+	rm -f ./bin/key
+	rm -f ./bin/iv
+	rm -f ./bin/minivpn-serverd
+	rm -f ./bin/simpletun
+	rm -f ./bin/*.o
+	rm -f ./bin/minivpn-client-*
 	rm -f ./$(SIMPLETUN_LOGS_DIR)/*.out
 	rm -f ./$(SIMPLETUN_LOGS_DIR)/*.err
-	rmdir $(SIMPLETUN_BINARY_DIR)
-	rmdir $(SIMPLETUN_LOGS_DIR)
+	! [ -d $(SIMPLETUN_LOGS_DIR) ] || rmdir $(SIMPLETUN_LOGS_DIR)
 
-$(SIMPLETUN_BINARY_DIR)/tunnel.o: src/tunnel.c include/tunnel.h $(SIMPLETUN_BINARY_DIR)
+again: clean all
+
+bin/tunnel.o: src/tunnel.c include/tunnel.h
 	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS)
 
-$(SIMPLETUN_BINARY_DIR)/protocol.o: src/protocol.c include/protocol.h $(SIMPLETUN_BINARY_DIR)
+bin/protocol.o: src/protocol.c include/protocol.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
 
-simpletun: $(SIMPLETUN_BINARY_DIR)/simpletun
-$(SIMPLETUN_BINARY_DIR)/simpletun: src/simpletun.c $(SIMPLETUN_BINARY_DIR)/tunnel.o
+bin/tcp.o: src/tcp.c include/tcp.h
+	$(CC) $(CC_FLAGS) -c -o $@ $<
+
+simpletun: bin/simpletun
+bin/simpletun: src/simpletun.c bin/tunnel.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS)
 
-server: $(SIMPLETUN_BINARY_DIR)/minivpn-serverd
-$(SIMPLETUN_BINARY_DIR)/minivpn-serverd: \
-	src/server/main.c $(SIMPLETUN_BINARY_DIR)/tunnel.o $(SIMPLETUN_BINARY_DIR)/protocol.o
+server: bin/minivpn-serverd
+bin/minivpn-serverd: \
+	src/server/main.c bin/tunnel.o bin/protocol.o bin/tcp.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 
-client: $(SIMPLETUN_BINARY_DIR)/minivpn-clientd
-$(SIMPLETUN_BINARY_DIR)/minivpn-clientd: \
-	src/client/main.c $(SIMPLETUN_BINARY_DIR)/tunnel.o $(SIMPLETUN_BINARY_DIR)/protocol.o
+bin/client.o: src/client/client.c include/client.h
+	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS) -lpthread
+
+client: bin/minivpn-client-start bin/minivpn-client-ping
+bin/minivpn-client-%: src/client/%.c bin/client.o bin/tunnel.o bin/protocol.o bin/tcp.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 
 tunnel: simpletun simpletun_net simpletun_peer stop_tunnel $(SIMPLETUN_LOGS_DIR) $(SIMPLETUN_KEY) $(SIMPLETUN_IV)
-	$(SIMPLETUN_BINARY_DIR)/simpletun --port $(SIMPLETUN_LOCAL_PORT) \
+	bin/simpletun --port $(SIMPLETUN_LOCAL_PORT) \
 		--peer-ip $(SIMPLETUN_PEER) --peer-port $(SIMPLETUN_PEER_PORT) \
 		--encryption-key $(SIMPLETUN_KEY) --encryption-iv $(SIMPLETUN_IV) \
 		--network $(SIMPLETUN_NET) --netmask 255.255.255.0 \
@@ -85,9 +88,6 @@ stop_tunnel:
 	killall -q -9 simpletun || true # killall returns 1 if no processes were killed
 	sleep 1
 	! (ps -e | grep simpletun)
-
-$(SIMPLETUN_BINARY_DIR):
-	mkdir $@
 
 $(SIMPLETUN_LOGS_DIR):
 	mkdir $@

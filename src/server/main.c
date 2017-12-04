@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "inet.h"
 #include "protocol.h"
+#include "tcp.h"
 #include "tunnel.h"
 
 #define FILE_PATH_SIZE 100
@@ -39,36 +40,12 @@ static void close_ssl()
 
 static int open_socket(in_port_t port)
 {
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  if (sockfd < 0) {
-    perror("socket");
-    return -1;
-  }
-
-  // Avoid EADDRINUSE error on bind()
-  int optval = 1;
-  if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
-    perror("setsockopt");
-    return -1;
-  }
-
   struct sockaddr_in sin;
   bzero(&sin, sizeof(sin));
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = hton_ip(INADDR_ANY);
   sin.sin_port = hton_port(port);
-
-  if (bind(sockfd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-    perror("bind");
-    return -1;
-  }
-
-  if (listen(sockfd, 16) < 0) {
-    perror("listen");
-    return -1;
-  }
-
-  return sockfd;
+  return tcp_server(AF_INET, (struct sockaddr *)&sin, sizeof(sin));
 }
 
 typedef struct {

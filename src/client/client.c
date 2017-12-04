@@ -1,5 +1,4 @@
 #include <arpa/inet.h>
-#include <getopt.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -7,6 +6,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <openssl/ssl.h>
@@ -15,9 +15,8 @@
 #include "debug.h"
 #include "inet.h"
 #include "protocol.h"
+#include "tcp.h"
 #include "tunnel.h"
-
-#define CA_CRT_PATH_SIZE 100
 
 static void init_ssl()
 {
@@ -69,19 +68,13 @@ static session *session_new(const unsigned char *key, const unsigned char *iv, c
     goto err_malloc;
   }
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  if (sockfd < 0) {
-    perror("socket");
-    goto err_socket;
-  }
-
   struct sockaddr_in sin;
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = hton_ip(server_ip);
   sin.sin_port = hton_port(server_port);
-  if (connect(sockfd, (const struct sockaddr *)&sin, sizeof(sin)) < 0) {
-    perror("connect");
-    goto err_connect;
+  int sockfd;
+  if ((sockfd = tcp_client(AF_INET, (struct sockaddr *)&sin, sizeof(sin))) < 0) {
+    goto err_tcp_client;
   }
 #ifdef DEBUG
   char server_ip_str[INET_ADDRSTRLEN];
@@ -155,9 +148,7 @@ err_ssl_new:
 err_load_cert:
   SSL_CTX_free(s->ctx);
 err_ctx_new:
-err_connect:
-  close(sockfd);
-err_socket:
+err_tcp_client:
   free(s);
 err_malloc:
   debug("unable to activate session\n");
@@ -178,70 +169,51 @@ static void session_delete(session *s)
   free(s);
 }
 
-static void usage(const char *progname)
+typedef struct {
+  int type;
+  char data[100];
+} cli_command;
+#define CLI_COMMAND_PING 0
+
+
+typedef struct {
+  int type;
+  char data[100];
+} cli_response;
+#define CLI_RESPONSE_PING             0
+#define CLI_RESPONSE_INVALID_COMMAND  1
+
+static bool eval_command(session *s, int conn, const cli_command *command)
 {
-  fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <server-ip> <client-ip> <network> <netmask>\n", progname);
-  fprintf(stderr, "%s -h\n", progname);
-  fprintf(stderr, "\n");
-  fprintf(stderr, "-c, --ca-crt <file>: root CA certificate file (default ~/.minivpn/ca.crt)\n");
-  fprintf(stderr, "-u, --udp-port <port>: port to use for UDP tunnel (default 55555)\n");
-  fprintf(stderr, "-p, --server-port <port>: TCP server port (default 55555)\n");
-  fprintf(stderr, "-h, --help: prints this help text\n");
-  exit(1);
+  (void)s;
+
+  cli_response res;
+
+  switch (command->type) {
+  case CLI_COMMAND_PING:
+    res.type = CLI_RESPONSE_PING;
+    break;
+  default:
+    res.type = CLI_RESPONSE_INVALID_COMMAND;
+  }
+
+  return write_n(conn, &res, sizeof(cli_response));
 }
 
-int main(int argc, char **argv)
+int client_start(const unsigned char *key, const unsigned char *iv, const char *ca_crt,
+                 const char *cli_socket, in_addr_t server_ip, in_port_t server_port,
+                 in_addr_t client_ip, in_port_t udp_port, in_addr_t network, in_addr_t netmask)
 {
-  unsigned char key[TUNNEL_KEY_SIZE];
-  unsigned char iv[TUNNEL_IV_SIZE];
-  char ca_crt[CA_CRT_PATH_SIZE + 1] = {0};
-  in_port_t server_port = 55555;
-  in_port_t udp_port = 55555;
-  in_addr_t server_ip;
-  in_addr_t client_ip;
-  in_addr_t network;
-  in_addr_t netmask;
-
-  snprintf(ca_crt, CA_CRT_PATH_SIZE, "%s/.minivpn/ca.crt", getenv("HOME"));
-
-  struct option long_options[] =
-  {
-    {"help",        no_argument,       0, 'h'},
-    {"ca-crt",      required_argument, 0, 'c'},
-    {"server-port", required_argument, 0, 'p'},
-    {"udp-port",    required_argument, 0, 'u'},
-    {0, 0, 0, 0}
-  };
-
-  char option;
-  int option_index = 0;
-  while((option = getopt_long(argc, argv, "hc:p:u:", long_options, &option_index)) > 0) {
-    switch(option) {
-    case 'c':
-      bzero(ca_crt, sizeof(ca_crt));
-      strncpy(ca_crt, optarg, CA_CRT_PATH_SIZE);
-      break;
-    case 'p':
-      server_port = atoi(optarg);
-      break;
-    case 'u':
-      udp_port = atoi(optarg);
-      break;
-    case 'h':
-    default:
-      usage(argv[0]);
-    }
+  // Set up a TCP server to handle CLI commands
+  struct sockaddr_un sa;
+  bzero(&sa, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path, cli_socket, 107);
+  int sockfd = tcp_server(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa));
+  if (sockfd < 1) {
+    fprintf(stderr, "unable to start cli server\n");
+    return 1;
   }
-
-  if (argc != optind + 4) {
-    usage(argv[0]);
-  }
-
-  server_ip = ntoh_ip(inet_addr(argv[optind++]));
-  client_ip = ntoh_ip(inet_addr(argv[optind++]));
-  network = ntoh_ip(inet_addr(argv[optind++]));
-  netmask = ntoh_ip(inet_addr(argv[optind++]));
 
   init_ssl();
 
@@ -252,11 +224,74 @@ int main(int argc, char **argv)
   }
 
   while (true) {
-    sleep(1);
+    int conn = accept(sockfd, NULL, NULL);
+    if (conn < 0) {
+      perror("accept");
+      // Back off a little so we don't spam error messages
+      sleep(1);
+      continue;
+    }
+
+    cli_command command;
+    if (!read_n(sockfd, &command, sizeof(cli_command))) {
+      debug("error reading cli command\n");
+      goto next_client;
+    }
+
+    if (!eval_command(s, conn, &command)) {
+      debug("error evaluating cli command\n");
+      goto next_client;
+    }
+
+next_client:
+    close(conn);
   }
 
   session_delete(s);
   close_ssl();
 
   return 0;
+}
+
+static bool send_cli_command(const char *sock, const cli_command *command, cli_response *response)
+{
+  bool result;
+
+  struct sockaddr_un sa;
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path, sock, 107);
+  int sockfd;
+  if ((sockfd = tcp_client(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa))) < 0) {
+    return false;
+  }
+
+  if (!write_n(sockfd, &command, sizeof(cli_command))) {
+    result = false;
+    goto close_socket;
+  }
+
+  if (!read_n(sockfd, &response, sizeof(cli_response))) {
+    result = false;
+    goto close_socket;
+  }
+
+  result = true;
+
+close_socket:
+  close(sockfd);
+  return result;
+}
+
+bool client_ping(const char *sock)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_PING;
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach client\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_PING;
 }
