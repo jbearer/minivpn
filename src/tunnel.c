@@ -571,7 +571,7 @@ static void net_to_tap(tunnel *t) {
 
 void tunnel_loop(tunnel *t)
 {
-  tunnel_debug(t, "beginning loop");
+  tunnel_debug(t, "beginning loop\n");
 
   int maxfd = t->net_fd > t->tap_fd ? t->net_fd : t->tap_fd;
 
@@ -603,7 +603,7 @@ void tunnel_loop(tunnel *t)
     }
   }
 
-  tunnel_debug(t, "exiting loop");
+  tunnel_debug(t, "exiting loop\n");
   t->running = false;
 }
 

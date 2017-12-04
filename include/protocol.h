@@ -18,6 +18,9 @@
 #define MINIVPN_PKT_ACK              2
 #define __minivpn_typesize_2 0
 
+#define MINIVPN_PKT_CLIENT_DETACH    3
+#define __minivpn_typesize_3 0
+
 #define MINIVPN_PKT_ANY 100
 #define __minivpn_typesize_100 sizeof(minivpn_packet)
 
@@ -31,12 +34,12 @@ typedef struct {
  * SESSION INITIALIZATION
  * Immediately after successful SSL handshake
  *
- * Protcol:
- * client sends minivpn_pkt_client_handshake to server
+ * Protocol:
+ * client sends minivpn_pkt_client_handshake
  * server authenticates client and creates tunnel
- * server sends minivpn_pkt_server_handshake to client
+ * server sends minivpn_pkt_server_handshake
  * client creates tunnel
- * client sends minivpn_pkt_ack to server
+ * client acks
  */
 
 typedef struct {
@@ -61,6 +64,15 @@ tunnel *minivpn_client_handshake(SSL *ssl, const unsigned char *key, const unsig
 
 tunnel *minivpn_server_handshake(SSL *ssl, in_addr_t server_ip, in_port_t server_port,
                                  in_addr_t server_network, in_addr_t server_netmask);
+
+/*
+ * SESSION TERMINATION
+ *
+ * Protocol:
+ * client sends minivpn_pkt_client_detach and closes SSL session
+ * server closes tunnel and SSL session and releases resources
+ */
+bool minivpn_client_detach(SSL *ssl);
 
 /*
  * Low-level communication

@@ -62,6 +62,7 @@ static void *in_band_loop(void *void_arg)
   }
 
   tunnel_delete(arg->tun);
+  free((void *)arg->halt);
   free(arg);
 
   return NULL;
@@ -78,7 +79,7 @@ static void *out_of_band_loop(void *void_arg)
 {
   out_of_band_arg *arg = (out_of_band_arg *)void_arg;
 
-  while (true) {
+  while (!*arg->halt) {
     minivpn_packet pkt;
     if (!minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt)) {
       debug("error receiving out-of-band packet\n");
@@ -86,19 +87,23 @@ static void *out_of_band_loop(void *void_arg)
     }
 
     switch (pkt.type) {
+    case MINIVPN_PKT_CLIENT_DETACH:
+      debug("beginning shutdown process");
+      *arg->halt = true;
+      break;
     default:
       debug("received unsupported out-of-band packet type %" PRIu16 "\n", pkt.type);
       // TODO tell the client we can't do that
+      // Backoff so we don't spam error messages
+      sleep(1);
     }
   }
 
-  *arg->halt = true;
   tunnel_stop(arg->tun);
 
   SSL_shutdown(arg->ssl);
   SSL_free(arg->ssl);
   SSL_CTX_free(arg->ctx);
-  free((void *)arg->halt);
   free(arg);
 
   return NULL;

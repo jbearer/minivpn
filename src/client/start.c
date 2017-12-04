@@ -27,6 +27,7 @@ static void usage(const char *progname)
   fprintf(stderr, "-c, --ca-crt <file>: root CA certificate file (default ~/.minivpn/ca.crt)\n");
   fprintf(stderr, "-u, --udp-port <port>: port to use for UDP tunnel (default 55555)\n");
   fprintf(stderr, "-p, --server-port <port>: TCP server port (default 55555)\n");
+  fprintf(stderr, "-D, --no-daemon: start the client in the current process, rather than as a daemon\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
   exit(1);
 }
@@ -34,6 +35,7 @@ static void usage(const char *progname)
 
 int main(int argc, char **argv)
 {
+  int fork_daemon = 1;
   unsigned char key[TUNNEL_KEY_SIZE];
   unsigned char iv[TUNNEL_IV_SIZE];
   char ca_crt[FILE_PATH_SIZE] = {0};
@@ -56,11 +58,12 @@ int main(int argc, char **argv)
     {"server-port", required_argument, 0, 'p'},
     {"udp-port",    required_argument, 0, 'u'},
     {"cli-socket",  required_argument, 0, 's'},
+    {"no-daemon",   no_argument, &fork_daemon, 0},
     {0, 0, 0, 0}
   };
 
   char option;
-  while((option = getopt_long(argc, argv, "ho:c:p:u:s:", long_options, NULL)) > 0) {
+  while((option = getopt_long(argc, argv, "ho:c:p:u:s:D", long_options, NULL)) > 0) {
     switch(option) {
     case 'o':
       bzero(log, FILE_PATH_SIZE);
@@ -80,6 +83,9 @@ int main(int argc, char **argv)
       bzero(cli_socket, FILE_PATH_SIZE);
       strncpy(cli_socket, optarg, FILE_PATH_SIZE-1);
       break;
+    case 'D':
+      fork_daemon = false;
+      break;
     case 'h':
     default:
       usage(argv[0]);
@@ -95,27 +101,32 @@ int main(int argc, char **argv)
   network = ntoh_ip(inet_addr(argv[optind++]));
   netmask = ntoh_ip(inet_addr(argv[optind++]));
 
-  pid_t child = fork();
-  if (child < 0) {
-    perror("fork");
-    return 1;
-  } else if (child > 0) {
-    return 0;
-  } else {
-    if (log[0] != '\0') {
-      int logfd = open(log, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
-      if (logfd < 1) {
-        perror("could not open log file, continuing without logging:");
+  if (fork_daemon) {
+    pid_t child = fork();
+    if (child < 0) {
+      perror("fork");
+      return 1;
+    } else if (child > 0) {
+      return 0;
+    } else {
+      if (log[0] != '\0') {
+        int logfd = open(log, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
+        if (logfd < 1) {
+          perror("could not open log file, continuing without logging:");
+          close(STDOUT_FILENO);
+          close(STDERR_FILENO);
+        } else {
+          dup2(logfd, STDOUT_FILENO);
+          dup2(logfd, STDERR_FILENO);
+        }
+      } else {
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-      } else {
-        dup2(logfd, STDOUT_FILENO);
-        dup2(logfd, STDERR_FILENO);
       }
-    } else {
-      close(STDOUT_FILENO);
-      close(STDERR_FILENO);
+      return client_start(
+        key, iv, ca_crt, cli_socket, server_ip, server_port, client_ip, udp_port, network, netmask);
     }
+  } else {
     return client_start(
       key, iv, ca_crt, cli_socket, server_ip, server_port, client_ip, udp_port, network, netmask);
   }

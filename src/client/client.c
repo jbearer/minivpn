@@ -174,26 +174,32 @@ typedef struct {
   char data[100];
 } cli_command;
 #define CLI_COMMAND_PING 0
-
+#define CLI_COMMAND_STOP 1
 
 typedef struct {
   int type;
   char data[100];
 } cli_response;
-#define CLI_RESPONSE_PING             0
+#define CLI_RESPONSE_OK               0
 #define CLI_RESPONSE_INVALID_COMMAND  1
 
 static bool eval_command(session *s, int conn, const cli_command *command)
 {
-  (void)s;
-
   cli_response res;
 
   switch (command->type) {
   case CLI_COMMAND_PING:
-    res.type = CLI_RESPONSE_PING;
+    debug("responding to ping request\n");
+    res.type = CLI_RESPONSE_OK;
+    break;
+  case CLI_COMMAND_STOP:
+    debug("beginning shutdown process\n");
+    minivpn_client_detach(s->ssl);
+    *s->halt = true;
+    res.type = CLI_RESPONSE_OK;
     break;
   default:
+    debug("invalid CLI command %d\n", command->type);
     res.type = CLI_RESPONSE_INVALID_COMMAND;
   }
 
@@ -208,7 +214,7 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
   struct sockaddr_un sa;
   bzero(&sa, sizeof(sa));
   sa.sun_family = AF_UNIX;
-  strncpy(sa.sun_path, cli_socket, 107);
+  strncpy(sa.sun_path + 1, cli_socket, 106);
   int sockfd = tcp_server(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa));
   if (sockfd < 1) {
     fprintf(stderr, "unable to start cli server\n");
@@ -223,7 +229,7 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
     return 1;
   }
 
-  while (true) {
+  while (!*s->halt) {
     int conn = accept(sockfd, NULL, NULL);
     if (conn < 0) {
       perror("accept");
@@ -231,9 +237,10 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
       sleep(1);
       continue;
     }
+    debug("accepted CLI connection\n");
 
     cli_command command;
-    if (!read_n(sockfd, &command, sizeof(cli_command))) {
+    if (!read_n(conn, &command, sizeof(cli_command))) {
       debug("error reading cli command\n");
       goto next_client;
     }
@@ -244,11 +251,14 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
     }
 
 next_client:
+    debug("closing CLI connection\n");
     close(conn);
   }
 
   session_delete(s);
   close_ssl();
+
+  close(sockfd);
 
   return 0;
 }
@@ -259,18 +269,18 @@ static bool send_cli_command(const char *sock, const cli_command *command, cli_r
 
   struct sockaddr_un sa;
   sa.sun_family = AF_UNIX;
-  strncpy(sa.sun_path, sock, 107);
+  strncpy(sa.sun_path + 1, sock, 106);
   int sockfd;
   if ((sockfd = tcp_client(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa))) < 0) {
     return false;
   }
 
-  if (!write_n(sockfd, &command, sizeof(cli_command))) {
+  if (!write_n(sockfd, command, sizeof(cli_command))) {
     result = false;
     goto close_socket;
   }
 
-  if (!read_n(sockfd, &response, sizeof(cli_response))) {
+  if (!read_n(sockfd, response, sizeof(cli_response))) {
     result = false;
     goto close_socket;
   }
@@ -293,5 +303,19 @@ bool client_ping(const char *sock)
     fprintf(stderr, "unable to reach client\n");
     return false;
   }
-  return res.type == CLI_RESPONSE_PING;
+  return res.type == CLI_RESPONSE_OK;
+}
+
+bool client_stop(const char *sock)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_STOP;
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach client\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_OK;
 }

@@ -73,7 +73,7 @@ bin/minivpn-serverd: \
 bin/client.o: src/client/client.c include/client.h
 	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS) -lpthread
 
-client: bin/minivpn-client-start bin/minivpn-client-ping
+client: bin/minivpn-client-start bin/minivpn-client-ping bin/minivpn-client-stop
 bin/minivpn-client-%: src/client/%.c bin/client.o bin/tunnel.o bin/protocol.o bin/tcp.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 

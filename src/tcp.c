@@ -48,20 +48,24 @@ int tcp_server(int af, const struct sockaddr *addr, socklen_t addr_len)
   int optval = 1;
   if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
     perror("setsockopt");
-    return -1;
+    goto err_close_sock;
   }
 
   if (bind(sockfd, addr, addr_len) < 0) {
     perror("bind");
-    return -1;
+    goto err_close_sock;
   }
 
   if (listen(sockfd, 16) < 0) {
     perror("listen");
-    return -1;
+    goto err_close_sock;
   }
 
   return sockfd;
+
+err_close_sock:
+  close(sockfd);
+  return -1;
 }
 
 int tcp_client(int af, const struct sockaddr *addr, socklen_t addr_len)

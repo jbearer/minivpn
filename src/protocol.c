@@ -96,6 +96,11 @@ tunnel *minivpn_server_handshake(SSL *ssl, uint32_t server_ip, uint16_t server_p
   return tun;
 }
 
+bool minivpn_client_detach(SSL *ssl)
+{
+  return minivpn_send(ssl, MINIVPN_PKT_CLIENT_DETACH, NULL);
+}
+
 static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake *p)
 {
     p->client_ip = hton_ip(p->client_ip);
@@ -122,6 +127,7 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
       server_handshake_to_network_byte_order((minivpn_pkt_server_handshake *)pkt->data);
       break;
     case MINIVPN_PKT_ACK:
+    case MINIVPN_PKT_CLIENT_DETACH:
       break;
     default:
       debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
@@ -160,6 +166,7 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
       server_handshake_to_host_byte_order((minivpn_pkt_server_handshake *)pkt->data);
       break;
     case MINIVPN_PKT_ACK:
+    case MINIVPN_PKT_CLIENT_DETACH:
       break;
     default:
       debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
