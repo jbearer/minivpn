@@ -17,10 +17,13 @@
 #include "protocol.h"
 #include "tunnel.h"
 
+#define FILE_PATH_SIZE 100
+#define PASSWORD_SIZE 100
+
 static in_port_t udp_port = 55555;
-static char cert_file[100];
-static char pkey_file[100];
-static char pkey_password[100] = "";
+static char cert_file[FILE_PATH_SIZE] = {0};
+static char pkey_file[FILE_PATH_SIZE] = {0};
+static char pkey_password[PASSWORD_SIZE] = {0};
 
 static void init_ssl()
 {
@@ -266,9 +269,11 @@ err_accept:
 static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <server-ip> <cert-file> <pkey-file>\n", progname);
+  fprintf(stderr, "%s [options] <server-ip>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
+  fprintf(stderr, "-c, --cert-file <path>: SSL certificate file (default ~/.minivpn/server.crt\n");
+  fprintf(stderr, "-k, --key-file <path>: RSA private key file (default ~/.minivpn/server.key\n");
   fprintf(stderr, "-p, --pkey-password <pword>: password for decrypting pkey-file\n");
   fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
   fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
@@ -286,9 +291,14 @@ int main(int argc, char **argv)
   in_addr_t network;
   in_addr_t netmask = -1;
 
+  snprintf(cert_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.crt", getenv("HOME"));
+  snprintf(pkey_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.key", getenv("HOME"));
+
   struct option long_options[] =
   {
     {"help",          no_argument,       0, 'h'},
+    {"cert-file",     required_argument, 0, 'c'},
+    {"key-file",      required_argument, 0, 'k'},
     {"pkey-password", required_argument, 0, 'p'},
     {"network",       required_argument, 0, 'n'},
     {"netmask",       required_argument, 0, 'm'},
@@ -299,10 +309,19 @@ int main(int argc, char **argv)
 
   char option;
   int option_index = 0;
-  while((option = getopt_long(argc, argv, "hp:n:m:t:u:", long_options, &option_index)) > 0) {
+  while((option = getopt_long(argc, argv, "hc:k:p:n:m:t:u:", long_options, &option_index)) > 0) {
     switch(option) {
+    case 'k':
+      bzero(pkey_file, FILE_PATH_SIZE);
+      strncpy(pkey_file, optarg, FILE_PATH_SIZE-1);
+      break;
+    case 'c':
+      bzero(cert_file, FILE_PATH_SIZE);
+      strncpy(cert_file, optarg, FILE_PATH_SIZE-1);
+      break;
     case 'p':
-      strncpy(pkey_password, optarg, 99);
+      strncpy(pkey_password, optarg, PASSWORD_SIZE-1);
+      break;
     case 'n':
       network = ntoh_ip(inet_addr(optarg));
       network_set = true;
@@ -322,7 +341,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != optind + 3) {
+  if (argc != optind + 1) {
     usage(argv[0]);
   }
 
@@ -330,8 +349,11 @@ int main(int argc, char **argv)
   if (!network_set) {
     network = server_ip;
   }
-  strncpy(cert_file, argv[optind++], 99);
-  strncpy(pkey_file, argv[optind++], 99);
+
+  debug("key is located at %s\n", pkey_file);
+  debug("crt is located at %s\n", cert_file);
+  debug("network is 0x%x\n", network);
+  debug("netmask is 0x%x\n", netmask);
 
   init_ssl();
 

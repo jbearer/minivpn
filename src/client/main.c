@@ -17,6 +17,8 @@
 #include "protocol.h"
 #include "tunnel.h"
 
+#define CA_CRT_PATH_SIZE 100
+
 static void init_ssl()
 {
   SSL_load_error_strings();
@@ -56,7 +58,7 @@ typedef struct {
   pthread_t tunnel_thread;
 } session;
 
-static session *session_new(const unsigned char *key, const unsigned char *iv,
+static session *session_new(const unsigned char *key, const unsigned char *iv, const char *ca_crt,
                             in_addr_t server_ip, in_port_t server_port,
                             in_addr_t client_ip, in_port_t client_port,
                             in_addr_t network, in_addr_t netmask)
@@ -93,6 +95,10 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
     goto err_ctx_new;
   }
   SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, NULL);
+  if (SSL_CTX_load_verify_locations(s->ctx, ca_crt, NULL) != 1) {
+    ERR_print_errors_fp(stderr);
+    goto err_load_cert;
+  }
 
   s->ssl = SSL_new(s->ctx);
   if (s->ssl == NULL) {
@@ -146,6 +152,7 @@ err_ssl_connect:
 err_set_fd:
   SSL_free(s->ssl);
 err_ssl_new:
+err_load_cert:
   SSL_CTX_free(s->ctx);
 err_ctx_new:
 err_connect:
@@ -177,6 +184,7 @@ static void usage(const char *progname)
   fprintf(stderr, "%s [options] <server-ip> <client-ip> <network> <netmask>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
+  fprintf(stderr, "-c, --ca-crt <file>: root CA certificate file (default ~/.minivpn/ca.crt)\n");
   fprintf(stderr, "-u, --udp-port <port>: port to use for UDP tunnel (default 55555)\n");
   fprintf(stderr, "-p, --server-port <port>: TCP server port (default 55555)\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
@@ -187,6 +195,7 @@ int main(int argc, char **argv)
 {
   unsigned char key[TUNNEL_KEY_SIZE];
   unsigned char iv[TUNNEL_IV_SIZE];
+  char ca_crt[CA_CRT_PATH_SIZE + 1] = {0};
   in_port_t server_port = 55555;
   in_port_t udp_port = 55555;
   in_addr_t server_ip;
@@ -194,9 +203,12 @@ int main(int argc, char **argv)
   in_addr_t network;
   in_addr_t netmask;
 
+  snprintf(ca_crt, CA_CRT_PATH_SIZE, "%s/.minivpn/ca.crt", getenv("HOME"));
+
   struct option long_options[] =
   {
     {"help",        no_argument,       0, 'h'},
+    {"ca-crt",      required_argument, 0, 'c'},
     {"server-port", required_argument, 0, 'p'},
     {"udp-port",    required_argument, 0, 'u'},
     {0, 0, 0, 0}
@@ -204,8 +216,12 @@ int main(int argc, char **argv)
 
   char option;
   int option_index = 0;
-  while((option = getopt_long(argc, argv, "hp:u:", long_options, &option_index)) > 0) {
+  while((option = getopt_long(argc, argv, "hc:p:u:", long_options, &option_index)) > 0) {
     switch(option) {
+    case 'c':
+      bzero(ca_crt, sizeof(ca_crt));
+      strncpy(ca_crt, optarg, CA_CRT_PATH_SIZE);
+      break;
     case 'p':
       server_port = atoi(optarg);
       break;
@@ -229,7 +245,8 @@ int main(int argc, char **argv)
 
   init_ssl();
 
-  session *s = session_new(key, iv, server_ip, server_port, client_ip, udp_port, network, netmask);
+  session *s = session_new(
+    key, iv, ca_crt, server_ip, server_port, client_ip, udp_port, network, netmask);
   if (s == NULL) {
     return 1;
   }
