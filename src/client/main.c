@@ -92,7 +92,7 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
     ERR_print_errors_fp(stderr);
     goto err_ctx_new;
   }
-  // SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, NULL);
+  SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, NULL);
 
   s->ssl = SSL_new(s->ctx);
   if (s->ssl == NULL) {
