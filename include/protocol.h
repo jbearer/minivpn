@@ -18,6 +18,9 @@
 #define MINIVPN_PKT_ACK              2
 #define __minivpn_typesize_2 0
 
+#define MINIVPN_PKT_ANY 100
+#define __minivpn_typesize_100 sizeof(minivpn_packet)
+
 typedef struct {
   uint16_t    type;
   uint32_t    length;

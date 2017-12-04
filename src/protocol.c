@@ -121,8 +121,10 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
     case MINIVPN_PKT_SERVER_HANDSHAKE:
       server_handshake_to_network_byte_order((minivpn_pkt_server_handshake *)pkt->data);
       break;
+    case MINIVPN_PKT_ACK:
+      break;
     default:
-      fprintf(stderr, "unrecognized packet type %" PRIu16 "\n", pkt->type);
+      debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
     }
 
     pkt->length = htonl(pkt->length);
@@ -157,8 +159,10 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
     case MINIVPN_PKT_SERVER_HANDSHAKE:
       server_handshake_to_host_byte_order((minivpn_pkt_server_handshake *)pkt->data);
       break;
+    case MINIVPN_PKT_ACK:
+      break;
     default:
-      fprintf(stderr, "unrecognized packet type %" PRIu16 "\n", pkt->type);
+      debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
     }
 }
 
@@ -209,6 +213,12 @@ bool minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
   minivpn_to_host_byte_order(&pkt);
 
   debug("received packet type=%" PRIu16 ", length=%" PRIu32 "\n", pkt.type, pkt.length);
+
+  if (type == MINIVPN_PKT_ANY) {
+    memcpy(data, &pkt, data_len);
+    return true;
+  }
+
   if (pkt.type != type) {
     debug("received wrong packet type %" PRIu16 " (expected %" PRIu16 ")\n", pkt.type, type);
     return false;

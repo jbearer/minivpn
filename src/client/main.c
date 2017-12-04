@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,9 +30,30 @@ static void close_ssl()
 }
 
 typedef struct {
+  tunnel *tun;
+  bool *halt;
+} tunnel_arg;
+
+static void *tun_loop(void *void_arg)
+{
+  tunnel_arg *arg = (tunnel_arg *)void_arg;
+
+  while (!(*(arg->halt))) {
+    tunnel_loop(arg->tun);
+  }
+
+  tunnel_delete(arg->tun);
+  free(arg);
+
+  return NULL;
+}
+
+typedef struct {
   SSL_CTX *ctx;
   SSL *ssl;
   tunnel *tun;
+  bool *halt;
+  pthread_t tunnel_thread;
 } session;
 
 static session *session_new(const unsigned char *key, const unsigned char *iv,
@@ -96,10 +118,28 @@ static session *session_new(const unsigned char *key, const unsigned char *iv,
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
   }
+  debug("minivpn handshake successful\n");
+
+  bool *halt = (bool *)malloc(sizeof(bool));
+  *halt = false;
+  s->halt = halt;
+
+  int pthread_errno = 0;
+  tunnel_arg *targ = (tunnel_arg *)malloc(sizeof(tunnel_arg));
+  targ->tun = s->tun;
+  targ->halt = s->halt;
+  if ((pthread_errno = pthread_create(&s->tunnel_thread, NULL, tun_loop, targ)) != 0) {
+    debug("error creating tunnel thread: %s\n", strerror(pthread_errno));
+    goto err_thread_create;
+  }
 
   debug("session activated with %s:%" PRIu16 "\n", server_ip_str, server_port);
   return s;
 
+err_thread_create:
+  tunnel_delete(s->tun);
+  free(targ);
+  free(halt);
 err_minivpn_handshake:
   SSL_shutdown(s->ssl);
 err_ssl_connect:
@@ -119,10 +159,15 @@ err_malloc:
 
 static void session_delete(session *s)
 {
+  *s->halt = true;
+  tunnel_stop(s->tun);
+  pthread_join(s->tunnel_thread, NULL);
+  free(s->halt);
+
   SSL_shutdown(s->ssl);
   SSL_free(s->ssl);
   SSL_CTX_free(s->ctx);
-  tunnel_delete(s->tun);
+
   free(s);
 }
 
@@ -187,6 +232,10 @@ int main(int argc, char **argv)
   session *s = session_new(key, iv, server_ip, server_port, client_ip, udp_port, network, netmask);
   if (s == NULL) {
     return 1;
+  }
+
+  while (true) {
+    sleep(1);
   }
 
   session_delete(s);

@@ -200,7 +200,7 @@ static bool ifdown(tunnel *t)
     return false;
   }
 
-  tunnel_debug(t, "brought up interface tun%" PRId64 "\n", t->dev);
+  tunnel_debug(t, "shut down interface tun%" PRId64 "\n", t->dev);
   return true;
 }
 
@@ -571,6 +571,8 @@ static void net_to_tap(tunnel *t) {
 
 void tunnel_loop(tunnel *t)
 {
+  tunnel_debug(t, "beginning loop");
+
   int maxfd = t->net_fd > t->tap_fd ? t->net_fd : t->tap_fd;
 
   while (!t->halt) {
@@ -601,6 +603,7 @@ void tunnel_loop(tunnel *t)
     }
   }
 
+  tunnel_debug(t, "exiting loop");
   t->running = false;
 }
 

@@ -68,21 +68,56 @@ static int open_socket(in_port_t port)
 }
 
 typedef struct {
-  SSL_CTX *ctx;
-  SSL *ssl;
   tunnel *tun;
+  volatile bool *halt;
 } in_band_arg;
 
 static void *in_band_loop(void *void_arg)
 {
   in_band_arg *arg = (in_band_arg *)void_arg;
 
-  tunnel_loop(arg->tun);
+  while (!*arg->halt) {
+    tunnel_loop(arg->tun);
+  }
+
   tunnel_delete(arg->tun);
+  free(arg);
+
+  return NULL;
+}
+
+typedef struct {
+  tunnel *tun;
+  SSL_CTX *ctx;
+  SSL *ssl;
+  volatile bool *halt;
+} out_of_band_arg;
+
+static void *out_of_band_loop(void *void_arg)
+{
+  out_of_band_arg *arg = (out_of_band_arg *)void_arg;
+
+  while (true) {
+    minivpn_packet pkt;
+    if (!minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt)) {
+      debug("error receiving out-of-band packet\n");
+      continue;
+    }
+
+    switch (pkt.type) {
+    default:
+      debug("received unsupported out-of-band packet type %" PRIu16 "\n", pkt.type);
+      // TODO tell the client we can't do that
+    }
+  }
+
+  *arg->halt = true;
+  tunnel_stop(arg->tun);
 
   SSL_shutdown(arg->ssl);
   SSL_free(arg->ssl);
   SSL_CTX_free(arg->ctx);
+  free((void *)arg->halt);
   free(arg);
 
   return NULL;
@@ -150,29 +185,53 @@ static void accept_client(
     debug("minivpn handshake succeeded\n");
   }
 
+  volatile bool *halt = (bool *)malloc(sizeof(bool));
+  *halt = false;
+
   pthread_t in_band_thread;
   int pthread_errno = 0;
   in_band_arg *ibarg = (in_band_arg *)malloc(sizeof(in_band_arg));
-  ibarg->ctx = ctx;
-  ibarg->ssl = ssl;
   ibarg->tun = tun;
+  ibarg->halt = halt;
   if ((pthread_errno = pthread_create(&in_band_thread, NULL, in_band_loop, ibarg)) != 0) {
-    fprintf(stderr, "error creating in-band thread: %s\n", strerror(pthread_errno));
+    debug("error creating in-band thread: %s\n", strerror(pthread_errno));
     goto err_in_band_thread_create;
   }
   if ((pthread_errno = pthread_detach(in_band_thread)) != 0) {
-    fprintf(stderr, "error detaching in-band thread: %s\n", strerror(pthread_errno));
+    debug("error detaching in-band thread: %s\n", strerror(pthread_errno));
     goto err_in_band_thread_detach;
   }
+
+  pthread_t out_of_band_thread;
+  out_of_band_arg *obarg = (out_of_band_arg *)malloc(sizeof(out_of_band_arg));
+  obarg->ctx = ctx;
+  obarg->ssl = ssl;
+  obarg->tun = tun;
+  obarg->halt = halt;
+  if ((pthread_errno = pthread_create(&out_of_band_thread, NULL, out_of_band_loop, obarg)) != 0) {
+    debug("error creating out-of-band thread: %s\n", strerror(pthread_errno));
+    goto err_out_of_band_thread_create;
+  }
+  pthread_detach(out_of_band_thread);
 
   debug("successfully launched client\n");
 
   return;
 
+err_out_of_band_thread_create:
 err_in_band_thread_detach:
+  *halt = true;
   tunnel_stop(tun);
   pthread_join(in_band_thread, NULL);
+  SSL_shutdown(ssl);
+  SSL_free(ssl);
+  SSL_CTX_free(ctx);
+  close(conn);
+  debug("failed to launch client\n");
+  return;
+
 err_in_band_thread_create:
+  tunnel_delete(tun);
   free(ibarg);
 err_minivpn_handshake:
   SSL_shutdown(ssl);
