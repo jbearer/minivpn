@@ -212,7 +212,7 @@ static bool eval_command(session *s, int conn, const cli_command *command)
     break;
   case CLI_COMMAND_STOP:
     debug("beginning shutdown process\n");
-    minivpn_client_detach(s->ssl);
+    minivpn_detach(s->ssl);
     *s->halt = true;
     res.type = CLI_RESPONSE_OK;
     break;

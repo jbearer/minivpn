@@ -57,7 +57,6 @@ static void *in_band_loop(void *void_arg)
   }
 
   tunnel_delete(arg->tun);
-  free((void *)arg->halt);
   free(arg);
 
   return NULL;
@@ -68,6 +67,7 @@ typedef struct {
   SSL_CTX *ctx;
   SSL *ssl;
   volatile bool *halt;
+  pthread_t in_band_thread;
 } out_of_band_arg;
 
 static void *out_of_band_loop(void *void_arg)
@@ -76,10 +76,14 @@ static void *out_of_band_loop(void *void_arg)
 
   while (!*arg->halt) {
     minivpn_packet pkt;
+    debug("waiting for out-of-band message from client\n");
     int err = minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt);
     if (err == MINIVPN_ERR_EOF) {
       debug("connection unexpectedly terminated, releasing client\n");
       *arg->halt = true;
+      continue;
+    } else if (err == MINIVPN_ERR_TIMEOUT) {
+      debug("timed out waiting for client message\n");
       continue;
     } else if (err != MINIVPN_OK) {
       debug("error receiving out-of-band packet\n");
@@ -87,8 +91,8 @@ static void *out_of_band_loop(void *void_arg)
     }
 
     switch (pkt.type) {
-    case MINIVPN_PKT_CLIENT_DETACH:
-      debug("beginning shutdown process\n");
+    case MINIVPN_PKT_DETACH:
+      debug("client detached, beginning shutdown process\n");
       *arg->halt = true;
       break;
     case MINIVPN_PKT_UPDATE_KEY:
@@ -121,7 +125,10 @@ static void *out_of_band_loop(void *void_arg)
     }
   }
 
+  minivpn_detach(arg->ssl);
+
   tunnel_stop(arg->tun);
+  pthread_join(arg->in_band_thread, NULL);
 
   SSL_shutdown(arg->ssl);
   SSL_free(arg->ssl);
@@ -141,10 +148,43 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
   return strlen(buf);
 }
 
+typedef struct thread_node {
+  pthread_t thread;
+  volatile bool *halt;
+  struct thread_node *next;
+} thread_list;
+
 static void accept_client(const char *cert_file, const char *pkey_file, tunnel_server *tunserv,
                           passwd_db_conn *pwddb, int sockfd, in_addr_t server_ip, in_port_t udp_port,
-                          in_addr_t server_network, in_addr_t server_netmask)
+                          in_addr_t server_network, in_addr_t server_netmask, thread_list **threads)
 {
+  // Use select so we can timeout
+  fd_set set;
+  FD_ZERO(&set);
+  FD_SET(sockfd, &set);
+
+  struct timeval timeout;
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+  int ret = select(sockfd + 1, &set, NULL, NULL, &timeout);
+
+  debug("waiting for connection\n");
+  if (ret < 0 && (errno == EINTR)) {
+    debug ("timed out waiting for connection\n");
+    return;
+  }
+  if (ret < 0) {
+    perror("select");
+    return;
+  }
+
+  if (!FD_ISSET(sockfd, &set)) {
+    debug("no connection available\n");
+    return;
+  }
+
+  debug("connection available\n");
   struct sockaddr_in sin;
   socklen_t sinlen = sizeof(sin);
   int conn = accept(sockfd, (struct sockaddr *)&sin, &sinlen);
@@ -220,10 +260,6 @@ static void accept_client(const char *cert_file, const char *pkey_file, tunnel_s
     debug("error creating in-band thread: %s\n", strerror(pthread_errno));
     goto err_in_band_thread_create;
   }
-  if ((pthread_errno = pthread_detach(in_band_thread)) != 0) {
-    debug("error detaching in-band thread: %s\n", strerror(pthread_errno));
-    goto err_in_band_thread_detach;
-  }
 
   pthread_t out_of_band_thread;
   out_of_band_arg *obarg = (out_of_band_arg *)malloc(sizeof(out_of_band_arg));
@@ -231,18 +267,36 @@ static void accept_client(const char *cert_file, const char *pkey_file, tunnel_s
   obarg->ssl = ssl;
   obarg->tun = tun;
   obarg->halt = halt;
+  obarg->in_band_thread = in_band_thread;
   if ((pthread_errno = pthread_create(&out_of_band_thread, NULL, out_of_band_loop, obarg)) != 0) {
     debug("error creating out-of-band thread: %s\n", strerror(pthread_errno));
     goto err_out_of_band_thread_create;
   }
-  pthread_detach(out_of_band_thread);
+
+  thread_list *next;
+  if (*threads == NULL) {
+    *threads = (thread_list *)malloc(sizeof(thread_list));
+    next = *threads;
+  } else {
+    (*threads)->next = (thread_list *)malloc(sizeof(thread_list));
+    next = (*threads)->next;
+  }
+  if (next == NULL) {
+    perror("error allocating thread node");
+    goto err_thread_list;
+  }
+
+  next->thread = out_of_band_thread;
+  next->halt = halt;
+  next->next = NULL;
+  *threads = next;
 
   debug("successfully launched client\n");
 
   return;
 
+err_thread_list:
 err_out_of_band_thread_create:
-err_in_band_thread_detach:
   *halt = true;
   tunnel_stop(tun);
   pthread_join(in_band_thread, NULL);
@@ -305,10 +359,24 @@ static void *server_main_loop(void *void_arg)
     goto err_tunserv;
   }
 
+  thread_list *threads = NULL;
+
   debug("listening on port %d\n", arg->tcp_port);
   while (!arg->halt) {
     accept_client(arg->cert_file, arg->pkey_file, tunserv, pwddb, sockfd, arg->ip, arg->udp_port,
-                  arg->network, arg->netmask);
+                  arg->network, arg->netmask, &threads);
+  }
+
+  for (thread_list *t = threads; t != NULL;) {
+    debug("joining client thread\n");
+    *t->halt = true;
+    pthread_join(t->thread, NULL);
+    debug("client thread joined\n");
+
+    thread_list *next = t->next;
+    free((void *)t->halt);
+    free(t);
+    t = next;
   }
 
   tunnel_server_delete(tunserv);

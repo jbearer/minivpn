@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -177,9 +178,9 @@ uint16_t minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv)
   return tunnel_set_iv(tun, iv) ? MINIVPN_OK : MINIVPN_ERR;
 }
 
-uint16_t minivpn_client_detach(SSL *ssl)
+uint16_t minivpn_detach(SSL *ssl)
 {
-  return minivpn_send(ssl, MINIVPN_PKT_CLIENT_DETACH, NULL);
+  return minivpn_send(ssl, MINIVPN_PKT_DETACH, NULL);
 }
 
 static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake *p)
@@ -220,7 +221,7 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
   case MINIVPN_PKT_UPDATE_KEY:
   case MINIVPN_PKT_UPDATE_IV:
   case MINIVPN_PKT_ACK:
-  case MINIVPN_PKT_CLIENT_DETACH:
+  case MINIVPN_PKT_DETACH:
     break;
   default:
     debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
@@ -271,7 +272,7 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
   case MINIVPN_PKT_UPDATE_KEY:
   case MINIVPN_PKT_UPDATE_IV:
   case MINIVPN_PKT_ACK:
-  case MINIVPN_PKT_CLIENT_DETACH:
+  case MINIVPN_PKT_DETACH:
     break;
   default:
     debug("unrecognized packet type %" PRIu16 "\n", pkt->type);
@@ -309,20 +310,49 @@ uint16_t minivpn_send_raw(SSL *ssl, uint16_t type, const void *data, size_t data
 
 uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
 {
-  minivpn_packet pkt;
-  char *buf = (char *)&pkt;
-  size_t togo = sizeof(minivpn_packet);
-  while (togo > 0) {
-    int ret = SSL_read(ssl, buf, togo);
-    if (ret > 0) {
-      togo -= ret;
-      buf += ret;
-    } else if (ret == 0) {
-      return MINIVPN_ERR_EOF;
-    } else {
-      fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, ret), NULL));
+  int ret;
+
+  // Use select so we can timeout
+  int fd = SSL_get_fd(ssl);
+  fd_set set;
+  FD_ZERO(&set);
+  FD_SET(fd, &set);
+
+  struct timeval timeout;
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+  int tries;
+  for (tries = 0; tries < 3; ++tries) {
+    ret = select(fd + 1, &set, NULL, NULL, &timeout);
+    if (ret < 0) {
+      perror("select");
       return MINIVPN_ERR_COMM;
     }
+    if (FD_ISSET(fd, &set)) {
+      break;
+    } else {
+      sleep(1);
+    }
+  }
+  if (tries == 3) {
+    return MINIVPN_ERR_TIMEOUT;
+  }
+
+  minivpn_packet pkt;
+  for (tries = 0; tries < 3; ++tries) {
+    if ((size_t)SSL_peek(ssl, &pkt, sizeof(pkt)) >= sizeof(pkt)) {
+      break;
+    }
+    sleep(1);
+  }
+  if (tries == 3) {
+    return MINIVPN_ERR_TIMEOUT;
+  }
+
+  if ((ret = SSL_read(ssl, &pkt, sizeof(pkt))) <= 0) {
+    fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, ret), NULL));
+    return MINIVPN_ERR_COMM;
   }
   minivpn_to_host_byte_order(&pkt);
 
@@ -364,7 +394,9 @@ const char *minivpn_errstr(uint16_t code)
   case MINIVPN_ERR_SERV:
     return "server error";
   case MINIVPN_ERR_EOF:
-    return  "connection with peer unexpectedly terminated";
+    return "connection with peer unexpectedly terminated";
+  case MINIVPN_ERR_TIMEOUT:
+    return "timeout";
   default:
     return "unknown error";
   }

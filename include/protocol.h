@@ -21,7 +21,7 @@
 #define MINIVPN_PKT_ACK                 2
 #define __minivpn_typesize_2            0
 
-#define MINIVPN_PKT_CLIENT_DETACH       3
+#define MINIVPN_PKT_DETACH              3
 #define __minivpn_typesize_3            0
 
 #define MINIVPN_PKT_UPDATE_KEY          4
@@ -48,6 +48,7 @@ typedef struct {
 #define MINIVPN_ERR_PERM                3
 #define MINIVPN_ERR_SERV                4
 #define MINIVPN_ERR_EOF                 5
+#define MINIVPN_ERR_TIMEOUT             6
 
 typedef struct {
   uint16_t    code;
@@ -120,10 +121,10 @@ uint16_t minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv);
  * SESSION TERMINATION
  *
  * Protocol:
- * client sends minivpn_pkt_client_detach and closes SSL session
- * server closes tunnel and SSL session and releases resources
+ * closing end sends minivpn_pkt_detach, closes connections, and releases resources
+ * receiving end closes connections and releases resources
  */
-uint16_t minivpn_client_detach(SSL *ssl);
+uint16_t minivpn_detach(SSL *ssl);
 
 /*
  * Low-level communication
