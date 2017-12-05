@@ -83,8 +83,30 @@ static void *out_of_band_loop(void *void_arg)
 
     switch (pkt.type) {
     case MINIVPN_PKT_CLIENT_DETACH:
-      debug("beginning shutdown process");
+      debug("beginning shutdown process\n");
       *arg->halt = true;
+      break;
+    case MINIVPN_PKT_UPDATE_KEY:
+      {
+        debug("updating session key\n");
+        minivpn_pkt_update_key *data = (minivpn_pkt_update_key *)pkt.data;
+        if (!tunnel_set_key(arg->tun, data->key)) {
+          minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
+        } else {
+          minivpn_ack(arg->ssl);
+        }
+      }
+      break;
+    case MINIVPN_PKT_UPDATE_IV:
+      {
+        debug("updating session iv\n");
+        minivpn_pkt_update_iv *data = (minivpn_pkt_update_iv *)pkt.data;
+        if (!tunnel_set_iv(arg->tun, data->iv)) {
+          minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
+        } else {
+          minivpn_ack(arg->ssl);
+        }
+      }
       break;
     default:
       debug("received unsupported out-of-band packet type %" PRIu16 "\n", pkt.type);

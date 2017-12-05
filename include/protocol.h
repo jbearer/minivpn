@@ -24,6 +24,12 @@
 #define MINIVPN_PKT_CLIENT_DETACH       3
 #define __minivpn_typesize_3            0
 
+#define MINIVPN_PKT_UPDATE_KEY          4
+#define __minivpn_typesize_4            sizeof(minivpn_pkt_update_key)
+
+#define MINIVPN_PKT_UPDATE_IV           5
+#define __minivpn_typesize_5            sizeof(minivpn_pkt_update_iv)
+
 #define MINIVPN_PKT_ERROR               99
 #define __minivpn_typesize_99           sizeof(minivpn_pkt_error)
 
@@ -39,6 +45,7 @@ typedef struct {
 #define MINIVPN_OK                      0
 #define MINIVPN_ERR_COMM                1
 #define MINIVPN_ERR_PERM                2
+#define MINIVPN_ERR_SERV                3
 
 typedef struct {
   uint16_t    code;
@@ -87,6 +94,25 @@ tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
 tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
                                  uint32_t server_ip, uint16_t server_port,
                                  uint32_t server_network, uint32_t server_netmask);
+
+/*
+ * SESSION KEY UPDATE
+ *
+ * Protocol:
+ * client sends new information
+ * server acks
+ */
+
+typedef struct {
+  unsigned char key[TUNNEL_KEY_SIZE];
+} minivpn_pkt_update_key;
+
+typedef struct {
+  unsigned char iv[TUNNEL_IV_SIZE];
+} minivpn_pkt_update_iv;
+
+bool minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key);
+bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv);
 
 /*
  * SESSION TERMINATION

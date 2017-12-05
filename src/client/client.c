@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -186,8 +187,10 @@ typedef struct {
   int type;
   char data[100];
 } cli_command;
-#define CLI_COMMAND_PING 0
-#define CLI_COMMAND_STOP 1
+#define CLI_COMMAND_PING        0
+#define CLI_COMMAND_STOP        1
+#define CLI_COMMAND_UPDATE_KEY  2
+#define CLI_COMMAND_UPDATE_IV   3
 
 typedef struct {
   int type;
@@ -195,6 +198,7 @@ typedef struct {
 } cli_response;
 #define CLI_RESPONSE_OK               0
 #define CLI_RESPONSE_INVALID_COMMAND  1
+#define CLI_RESPONSE_ERR              2
 
 static bool eval_command(session *s, int conn, const cli_command *command)
 {
@@ -210,6 +214,22 @@ static bool eval_command(session *s, int conn, const cli_command *command)
     minivpn_client_detach(s->ssl);
     *s->halt = true;
     res.type = CLI_RESPONSE_OK;
+    break;
+  case CLI_COMMAND_UPDATE_KEY:
+    debug("updating session key\n");
+    if (minivpn_update_key(s->ssl, s->tun, (const unsigned char *)command->data)) {
+      res.type = CLI_RESPONSE_OK;
+    } else {
+      res.type = CLI_RESPONSE_ERR;
+    }
+    break;
+  case CLI_COMMAND_UPDATE_IV:
+    debug("updating session iv\n");
+    if (minivpn_update_iv(s->ssl, s->tun, (const unsigned char *)command->data)) {
+      res.type = CLI_RESPONSE_OK;
+    } else {
+      res.type = CLI_RESPONSE_ERR;
+    }
     break;
   default:
     debug("invalid CLI command %d\n", command->type);
@@ -333,3 +353,84 @@ bool client_stop(const char *sock)
   }
   return res.type == CLI_RESPONSE_OK;
 }
+
+bool client_update_key(const char *sock, const unsigned char *key)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_UPDATE_KEY;
+  memcpy(comm.data, key, TUNNEL_KEY_SIZE);
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach client\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_OK;
+}
+
+bool client_update_iv(const char *sock, const unsigned char *iv)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_UPDATE_IV;
+  memcpy(comm.data, iv, TUNNEL_IV_SIZE);
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach client\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_OK;
+}
+
+bool client_read_key(const char *file, unsigned char *key)
+{
+  int fd = open(file, O_RDONLY);
+  if (fd == -1) {
+    perror("open");
+    return false;
+  }
+
+  ssize_t nread = read(fd, key, TUNNEL_KEY_SIZE);
+  if (nread < 0) {
+    perror("read");
+    goto err_close_fd;
+  } else if (nread < TUNNEL_KEY_SIZE) {
+    fprintf(stderr, "key is too short (must be %d bytes, got %zd)\n", TUNNEL_KEY_SIZE, nread);
+    goto err_close_fd;
+  }
+
+  close(fd);
+  return true;
+
+err_close_fd:
+  close(fd);
+  return false;
+}
+
+bool client_read_iv(const char *file, unsigned char *iv)
+{
+  int fd = open(file, O_RDONLY);
+  if (fd == -1) {
+    perror("open");
+    return false;
+  }
+
+  ssize_t nread = read(fd, iv, TUNNEL_IV_SIZE);
+  if (nread < 0) {
+    perror("read");
+    goto err_close_fd;
+  } else if (nread < TUNNEL_IV_SIZE) {
+    fprintf(stderr, "iv is too short (must be %d bytes, got %zd)\n", TUNNEL_IV_SIZE, nread);
+    goto err_close_fd;
+  }
+
+  close(fd);
+  return true;
+
+err_close_fd:
+  close(fd);
+  return false;
+}
+

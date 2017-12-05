@@ -20,7 +20,7 @@ tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
 {
   uint16_t err;
 
-  tunnel *tun = tunnel_new(tunserv, key, iv);
+  tunnel *tun = tunnel_new(tunserv);
   if (tun == NULL) {
     debug("error creating tunnel\n");
     return NULL;
@@ -48,6 +48,14 @@ tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
     goto err_free_tun;
   }
 
+  if (!tunnel_set_key(tun, key)) {
+    debug("error setting tunnel key\n");
+    goto err_free_tun;
+  }
+  if (!tunnel_set_iv(tun, iv)) {
+    debug("error setting tunnel iv\n");
+    goto err_free_tun;
+  }
   if (!tunnel_connect(tun, server_init.server_ip, server_init.server_port, server_init.server_tunnel)) {
     debug("error connecting tunnel\n");
     goto err_free_tun;
@@ -89,10 +97,17 @@ tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_con
     return NULL;
   }
 
-  tunnel *tun = tunnel_new(tunserv, client_init.key, client_init.iv);
+  tunnel *tun = tunnel_new(tunserv);
   if (tun == NULL) {
     debug("could not create tunnel\n");
     return NULL;
+  }
+  if (!tunnel_set_key(tun, client_init.key)) {
+    debug("could not set tunnel key\n");
+    goto err_free_tun;
+  }
+  if (!tunnel_set_iv(tun, client_init.iv)) {
+    goto err_free_tun;
   }
   if (!tunnel_connect(tun, client_init.client_ip, client_init.client_port, client_init.client_tunnel)) {
     debug("could not connect tunnel\n");
@@ -124,6 +139,42 @@ tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_con
 err_free_tun:
   tunnel_delete(tun);
   return NULL;
+}
+
+bool minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key)
+{
+  int err;
+
+  minivpn_pkt_update_key pkt;
+  memcpy(pkt.key, key, TUNNEL_KEY_SIZE);
+  if ((err = minivpn_send(ssl, MINIVPN_PKT_UPDATE_KEY, &pkt)) != MINIVPN_OK) {
+    debug("error sending update key packet: %s\n", minivpn_errstr(err));
+    return false;
+  }
+  if ((err = minivpn_await_ack(ssl)) != MINIVPN_OK) {
+    debug("error receiving key change acknowledgement: %s\n", minivpn_errstr(err));
+    return false;
+  }
+
+  return tunnel_set_key(tun, key);
+}
+
+bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv)
+{
+  int err;
+
+  minivpn_pkt_update_iv pkt;
+  memcpy(pkt.iv, iv, TUNNEL_IV_SIZE);
+  if ((err = minivpn_send(ssl, MINIVPN_PKT_UPDATE_IV, &pkt)) != MINIVPN_OK) {
+    debug("error sending update iv packet: %s\n", minivpn_errstr(err));
+    return false;
+  }
+  if ((err = minivpn_await_ack(ssl)) != MINIVPN_OK) {
+    debug("error receiving iv change acknowledgement: %s\n", minivpn_errstr(err));
+    return false;
+  }
+
+  return tunnel_set_iv(tun, iv);
 }
 
 bool minivpn_client_detach(SSL *ssl)
@@ -166,6 +217,8 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
   case MINIVPN_PKT_ERROR:
     error_to_network_byte_order((minivpn_pkt_error *)pkt->data);
     break;
+  case MINIVPN_PKT_UPDATE_KEY:
+  case MINIVPN_PKT_UPDATE_IV:
   case MINIVPN_PKT_ACK:
   case MINIVPN_PKT_CLIENT_DETACH:
     break;
@@ -215,6 +268,8 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
   case MINIVPN_PKT_ERROR:
     error_to_host_byte_order((minivpn_pkt_error *)pkt->data);
     break;
+  case MINIVPN_PKT_UPDATE_KEY:
+  case MINIVPN_PKT_UPDATE_IV:
   case MINIVPN_PKT_ACK:
   case MINIVPN_PKT_CLIENT_DETACH:
     break;
@@ -302,6 +357,8 @@ const char *minivpn_errstr(uint16_t code)
     return "protocol error";
   case MINIVPN_ERR_PERM:
     return "permission denied";
+  case MINIVPN_ERR_SERV:
+    return "server error";
   default:
     return "unknown error";
   }

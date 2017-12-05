@@ -13,3 +13,7 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
 
 bool client_ping(const char *sock);
 bool client_stop(const char *sock);
+bool client_update_key(const char *sock, const unsigned char *key);
+bool client_update_iv(const char *sock, const unsigned char *iv);
+bool client_read_key(const char *file, unsigned char *key);
+bool client_read_iv(const char *file, unsigned char *iv);

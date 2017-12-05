@@ -236,6 +236,12 @@ void tunnel_server_delete(tunnel_server *s)
   free(s);
 }
 
+tunnel *tunnel_server_get(tunnel_server *s, tunnel_id_t t)
+{
+  if (t > MAX_TUNNELS) return NULL;
+  return s->tunnels[t];
+}
+
 struct __tunnel {
   tunnel_server *server;
   unsigned char key[TUNNEL_KEY_SIZE];
@@ -385,7 +391,7 @@ bool tunnel_route(tunnel *t, in_addr_t network, in_addr_t netmask)
   return true;
 }
 
-tunnel *tunnel_new(tunnel_server *s, const unsigned char *key, const unsigned char *iv)
+tunnel *tunnel_new(tunnel_server *s)
 {
   tunnel *t = (tunnel *)malloc(sizeof(tunnel));
   if (!t) {
@@ -401,14 +407,7 @@ tunnel *tunnel_new(tunnel_server *s, const unsigned char *key, const unsigned ch
   bzero(t->netmask, sizeof(t->netmask));
   t->halt = false;
   t->running = false;
-
-  memcpy(t->key, key, TUNNEL_KEY_SIZE);
-  memcpy(t->iv, iv, TUNNEL_IV_SIZE);
-  t->pkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, NULL, t->key, TUNNEL_KEY_SIZE);
-  if (t->pkey == NULL) {
-    ERR_print_errors_fp(stderr);
-    goto err_pkey;
-  }
+  t->pkey = NULL;
 
   // Allocate device id
   for (t->id = 0; t->id < MAX_TUNNELS; ++t->id) {
@@ -446,8 +445,6 @@ err_sock:
 err_tun:
   t->server->tunnels[t->id] = NULL;
 err_dev:
-  EVP_PKEY_free(t->pkey);
-err_pkey:
   pthread_mutex_unlock(&t->server->lock);
   return NULL;
 }
@@ -461,7 +458,7 @@ void tunnel_delete(tunnel *t)
   tunnel_stop(t);
   tunnel_unroute(t);
   ifdown(t);
-  EVP_PKEY_free(t->pkey);
+  if (t->pkey) EVP_PKEY_free(t->pkey);
   close(t->tunfd);
   close(t->sockfd);
   t->server->tunnels[t->id] = NULL;
@@ -722,11 +719,38 @@ tunnel_id_t tunnel_id(tunnel *t)
   return t->id;
 }
 
+tunnel_id_t tunnel_peer(tunnel *t)
+{
+  return ntoh_tunnel_id(t->peer_id);
+}
+
 bool tunnel_connect(tunnel *t, in_addr_t peer_ip, in_port_t peer_port, tunnel_id_t peer_tunnel)
 {
   t->peer_addr.sin_family = AF_INET;
   t->peer_addr.sin_addr.s_addr = hton_ip(peer_ip);
   t->peer_addr.sin_port = hton_port(peer_port);
   t->peer_id = hton_tunnel_id(peer_tunnel);
+  return true;
+}
+
+bool tunnel_set_key(tunnel *t, const unsigned char *key)
+{
+  memcpy(t->key, key, TUNNEL_KEY_SIZE);
+
+  if (t->pkey != NULL) {
+    EVP_PKEY_free(t->pkey);
+  }
+
+  t->pkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, NULL, t->key, TUNNEL_KEY_SIZE);
+  if (t->pkey == NULL) {
+    ERR_print_errors_fp(stderr);
+    return false;
+  }
+  return true;
+}
+
+bool tunnel_set_iv(tunnel *t, const unsigned char *iv)
+{
+  memcpy(t->iv, iv, TUNNEL_IV_SIZE);
   return true;
 }

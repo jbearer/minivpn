@@ -28,6 +28,11 @@ tunnel_id_t ntoh_tunnel_id(tunnel_id_t);
 tunnel_server *tunnel_server_new(in_port_t port);
 
 /**
+ * Get a tunnel owned by a tunnel_server.
+ */
+tunnel *tunnel_server_get(tunnel_server *, tunnel_id_t);
+
+/**
  * Stop a tunnel server and free its resources, including any running tunnels.
  */
 void tunnel_server_delete(tunnel_server *);
@@ -36,12 +41,29 @@ void tunnel_server_delete(tunnel_server *);
  * Allocate and initialize a new tunnel. Return a pointer to the tunnel, or NULL if allocation or
  * initialization fails.
  */
-tunnel *tunnel_new(tunnel_server *server, const unsigned char *key, const unsigned char *iv);
+tunnel *tunnel_new(tunnel_server *server);
+
+/**
+ * Set the session key. This method must be called before tunnel_loop. It may be called more than
+ * once to change the key mid-session.
+ */
+bool tunnel_set_key(tunnel *, const unsigned char *key);
+
+/**
+ * Set the initialization vector. This method must be called before tunnel_loop. It may be called
+ * more than once to change the initialization vector mid-session.
+ */
+bool tunnel_set_iv(tunnel *, const unsigned char *iv);
 
 /**
  * Get an identifier which can be used by a peer to uniquely specify this tunnel.
  */
 tunnel_id_t tunnel_id(tunnel *);
+
+/**
+ * Get the identifier of a tunnel's peer. Only valid after tunnel_connect.
+ */
+tunnel_id_t tunnel_peer(tunnel *);
 
 /**
  * Connect a tunnel to a peer endpoint. This function must be called before tunnel_loop;

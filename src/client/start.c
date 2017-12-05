@@ -8,6 +8,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <openssl/err.h>
+#include <openssl/rand.h>
+
 #include "client.h"
 #include "debug.h"
 #include "inet.h"
@@ -28,6 +31,8 @@ static void usage(const char *progname)
   fprintf(stderr, "-c, --ca-crt <file>: root CA certificate file (default ~/.minivpn/ca.crt)\n");
   fprintf(stderr, "-u, --udp-port <port>: port to use for UDP tunnel (default 55555)\n");
   fprintf(stderr, "-p, --server-port <port>: TCP server port (default 55555)\n");
+  fprintf(stderr, "-k, --key <file>: session key (default is random)\n");
+  fprintf(stderr, "-i, --iv <file>: session initialization vector (default is random)\n");
   fprintf(stderr, "-D, --no-daemon: start the client in the current process, rather than as a daemon\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
   exit(1);
@@ -49,6 +54,14 @@ int main(int argc, char **argv)
   char cli_socket[FILE_PATH_SIZE] = CLIENT_DEFAULT_CLI_SOCKET;
 
   snprintf(ca_crt, FILE_PATH_SIZE-1, "%s/.minivpn/ca.crt", getenv("HOME"));
+  if (RAND_bytes((unsigned char *)key, TUNNEL_KEY_SIZE) != 1) {
+    ERR_print_errors_fp(stderr);
+    return 1;
+  }
+  if (RAND_bytes((unsigned char *)iv, TUNNEL_IV_SIZE) != 1) {
+    ERR_print_errors_fp(stderr);
+    return 1;
+  }
 
   struct option long_options[] =
   {
@@ -58,12 +71,14 @@ int main(int argc, char **argv)
     {"server-port", required_argument, 0, 'p'},
     {"udp-port",    required_argument, 0, 'u'},
     {"cli-socket",  required_argument, 0, 's'},
+    {"key",         required_argument, 0, 'k'},
+    {"iv",          required_argument, 0, 'i'},
     {"no-daemon",   no_argument, &fork_daemon, 0},
     {0, 0, 0, 0}
   };
 
   char option;
-  while((option = getopt_long(argc, argv, "ho:c:p:u:s:D", long_options, NULL)) > 0) {
+  while((option = getopt_long(argc, argv, "ho:c:p:u:s:k:i:D", long_options, NULL)) > 0) {
     switch(option) {
     case 'o':
       bzero(log, FILE_PATH_SIZE);
@@ -82,6 +97,12 @@ int main(int argc, char **argv)
     case 's':
       bzero(cli_socket, FILE_PATH_SIZE);
       strncpy(cli_socket, optarg, FILE_PATH_SIZE-1);
+      break;
+    case 'k':
+      if (!client_read_key(optarg, key)) return 1;
+      break;
+    case 'i':
+      if (!client_read_iv(optarg, iv)) return 1;
       break;
     case 'D':
       fork_daemon = false;
