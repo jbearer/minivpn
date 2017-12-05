@@ -1,11 +1,11 @@
 #include <arpa/inet.h>
-#include <getopt.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <openssl/bio.h>
@@ -15,16 +15,12 @@
 #include "debug.h"
 #include "inet.h"
 #include "protocol.h"
+#include "server.h"
 #include "tcp.h"
 #include "tunnel.h"
 
-#define FILE_PATH_SIZE 100
-#define PASSWORD_SIZE 100
-
 static in_port_t udp_port = 55555;
-static char cert_file[FILE_PATH_SIZE] = {0};
-static char pkey_file[FILE_PATH_SIZE] = {0};
-static char pkey_password[PASSWORD_SIZE] = {0};
+static char pkey_password[PASSWORD_SIZE];
 
 static void init_ssl()
 {
@@ -119,8 +115,9 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
   return strlen(buf);
 }
 
-static void accept_client(
-  int sockfd, in_addr_t server_ip, in_addr_t server_network, in_addr_t server_netmask)
+static void accept_client(const char *cert_file, const char *pkey_file,
+                          int sockfd, in_addr_t server_ip,
+                          in_addr_t server_network, in_addr_t server_netmask)
 {
   struct sockaddr_in sin;
   socklen_t sinlen = sizeof(sin);
@@ -248,108 +245,202 @@ err_accept:
   return;
 }
 
-static void usage(const char *progname)
+typedef struct {
+  char cert_file[FILE_PATH_SIZE];
+  char pkey_file[FILE_PATH_SIZE];
+  in_port_t tcp_port;
+  in_addr_t ip;
+  in_addr_t network;
+  in_addr_t netmask;
+  volatile bool halt;
+} server_arg;
+
+static void *server_main_loop(void *void_arg)
 {
-  fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <server-ip>\n", progname);
-  fprintf(stderr, "%s -h\n", progname);
-  fprintf(stderr, "\n");
-  fprintf(stderr, "-c, --cert-file <path>: SSL certificate file (default ~/.minivpn/server.crt\n");
-  fprintf(stderr, "-k, --key-file <path>: RSA private key file (default ~/.minivpn/server.key\n");
-  fprintf(stderr, "-p, --pkey-password <pword>: password for decrypting pkey-file\n");
-  fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
-  fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
-  fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
-  fprintf(stderr, "-u, --udp-port <port>: beginning of port range to use for UDP tunnels (default 55555)\n");
-  fprintf(stderr, "-h, --help: prints this help text\n");
-  exit(1);
+  server_arg *arg = (server_arg *)void_arg;
+
+  int sockfd = open_socket(arg->tcp_port);
+  if (sockfd < 0) {
+    return NULL;
+  }
+
+  debug("listening on port %d\n", arg->tcp_port);
+  while (!arg->halt) {
+    accept_client(arg->cert_file, arg->pkey_file, sockfd, arg->ip, arg->network, arg->netmask);
+  }
+
+  close(sockfd);
+  return NULL;
 }
 
-int main(int argc, char **argv)
+typedef struct {
+  bool halt;
+} session;
+
+typedef struct {
+  int type;
+  char data[100];
+} cli_command;
+#define CLI_COMMAND_PING 0
+#define CLI_COMMAND_STOP 1
+
+typedef struct {
+  int type;
+  char data[100];
+} cli_response;
+#define CLI_RESPONSE_OK               0
+#define CLI_RESPONSE_INVALID_COMMAND  1
+
+static bool eval_command(session *s, int conn, const cli_command *command)
 {
-  in_port_t port = 55555;
-  in_addr_t server_ip;
-  bool      network_set = false;
-  in_addr_t network;
-  in_addr_t netmask = -1;
+  cli_response res;
 
-  snprintf(cert_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.crt", getenv("HOME"));
-  snprintf(pkey_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.key", getenv("HOME"));
-
-  struct option long_options[] =
-  {
-    {"help",          no_argument,       0, 'h'},
-    {"cert-file",     required_argument, 0, 'c'},
-    {"key-file",      required_argument, 0, 'k'},
-    {"pkey-password", required_argument, 0, 'p'},
-    {"network",       required_argument, 0, 'n'},
-    {"netmask",       required_argument, 0, 'm'},
-    {"tcp-port",      required_argument, 0, 't'},
-    {"udp-port",      required_argument, 0, 'u'},
-    {0, 0, 0, 0}
-  };
-
-  char option;
-  int option_index = 0;
-  while((option = getopt_long(argc, argv, "hc:k:p:n:m:t:u:", long_options, &option_index)) > 0) {
-    switch(option) {
-    case 'k':
-      bzero(pkey_file, FILE_PATH_SIZE);
-      strncpy(pkey_file, optarg, FILE_PATH_SIZE-1);
-      break;
-    case 'c':
-      bzero(cert_file, FILE_PATH_SIZE);
-      strncpy(cert_file, optarg, FILE_PATH_SIZE-1);
-      break;
-    case 'p':
-      strncpy(pkey_password, optarg, PASSWORD_SIZE-1);
-      break;
-    case 'n':
-      network = ntoh_ip(inet_addr(optarg));
-      network_set = true;
-      break;
-    case 'm':
-      netmask = ntoh_ip(inet_addr(optarg));
-      break;
-    case 't':
-      port = atoi(optarg);
-      break;
-    case 'u':
-      udp_port = atoi(optarg);
-      break;
-    case 'h':
-    default:
-      usage(argv[0]);
-    }
+  switch (command->type) {
+  case CLI_COMMAND_PING:
+    debug("responding to ping request\n");
+    res.type = CLI_RESPONSE_OK;
+    break;
+  case CLI_COMMAND_STOP:
+    debug("beginning shutdown process\n");
+    s->halt = true;
+    res.type = CLI_RESPONSE_OK;
+    break;
+  default:
+    debug("invalid CLI command %d\n", command->type);
+    res.type = CLI_RESPONSE_INVALID_COMMAND;
   }
 
-  if (argc != optind + 1) {
-    usage(argv[0]);
-  }
+  return write_n(conn, &res, sizeof(cli_response));
+}
 
-  server_ip = ntoh_ip(inet_addr(argv[optind++]));
-  if (!network_set) {
-    network = server_ip;
-  }
+int server_start(const char *cert_file, const char *pkey_file, const char *_pkey_password,
+                 const char *cli_socket, in_addr_t ip, in_port_t tcp_port, in_port_t _udp_port,
+                 in_addr_t network, in_addr_t netmask)
+{
+  udp_port = _udp_port;
+  strncpy(pkey_password, _pkey_password, PASSWORD_SIZE);
 
-  debug("key is located at %s\n", pkey_file);
-  debug("crt is located at %s\n", cert_file);
-  debug("network is 0x%x\n", network);
-  debug("netmask is 0x%x\n", netmask);
-
-  init_ssl();
-
-  int sockfd = open_socket(port);
-  if (sockfd < 0) {
+  // Set up a TCP server to handle CLI commands
+  struct sockaddr_un sa;
+  bzero(&sa, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path + 1, cli_socket, 106);
+  int sockfd = tcp_server(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa));
+  if (sockfd < 1) {
+    fprintf(stderr, "unable to start cli server\n");
     return 1;
   }
 
-  debug("listening on port %d\n", port);
-  while (true) {
-    accept_client(sockfd, server_ip, network, netmask);
+  init_ssl();
+
+  server_arg arg;
+  bzero(&arg, sizeof(arg));
+  strncpy(arg.cert_file, cert_file, FILE_PATH_SIZE);
+  strncpy(arg.pkey_file, pkey_file, FILE_PATH_SIZE);
+  arg.tcp_port = tcp_port;
+  arg.ip = ip;
+  arg.network = network;
+  arg.netmask = netmask;
+  arg.halt = false;
+
+  pthread_t server_thread;
+  int pthread_errno;
+  if ((pthread_errno = pthread_create(&server_thread, NULL, server_main_loop, &arg)) != 0) {
+    debug("unable to start server thread: %s", strerror(pthread_errno));
+    return 1;
   }
+
+  session s;
+  s.halt = false;
+
+  while (!s.halt) {
+    int conn = accept(sockfd, NULL, NULL);
+    if (conn < 0) {
+      perror("accept");
+      // Back off a little so we don't spam error messages
+      sleep(1);
+      continue;
+    }
+    debug("accepted CLI connection\n");
+
+    cli_command command;
+    if (!read_n(conn, &command, sizeof(cli_command))) {
+      debug("error reading cli command\n");
+      goto next_client;
+    }
+
+    if (!eval_command(&s, conn, &command)) {
+      debug("error evaluating cli command\n");
+      goto next_client;
+    }
+
+next_client:
+    debug("closing CLI connection\n");
+    close(conn);
+  }
+
+  arg.halt = true;
+  pthread_join(server_thread, NULL);
 
   close(sockfd);
   close_ssl();
   return 0;
 }
+
+static bool send_cli_command(const char *sock, const cli_command *command, cli_response *response)
+{
+  bool result;
+
+  struct sockaddr_un sa;
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path + 1, sock, 106);
+  int sockfd;
+  if ((sockfd = tcp_client(AF_UNIX, (struct sockaddr *)&sa, sizeof(sa))) < 0) {
+    return false;
+  }
+
+  if (!write_n(sockfd, command, sizeof(cli_command))) {
+    result = false;
+    goto close_socket;
+  }
+
+  if (!read_n(sockfd, response, sizeof(cli_response))) {
+    result = false;
+    goto close_socket;
+  }
+
+  result = true;
+
+close_socket:
+  close(sockfd);
+  return result;
+}
+
+bool server_ping(const char *sock)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_PING;
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach server\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_OK;
+}
+
+bool server_stop(const char *sock)
+{
+  cli_command comm;
+  cli_response res;
+
+  comm.type = CLI_COMMAND_STOP;
+
+  if (!send_cli_command(sock, &comm, &res)) {
+    fprintf(stderr, "unable to reach server\n");
+    return false;
+  }
+  return res.type == CLI_RESPONSE_OK;
+}
+

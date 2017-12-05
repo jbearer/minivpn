@@ -42,7 +42,7 @@ all: $(SIMPLETUN_LOGS_DIR) simpletun server client
 clean:
 	rm -f ./bin/key
 	rm -f ./bin/iv
-	rm -f ./bin/minivpn-serverd
+	rm -f ./bin/minivpn-server-*
 	rm -f ./bin/simpletun
 	rm -f ./bin/*.o
 	rm -f ./bin/minivpn-client-*
@@ -53,7 +53,7 @@ clean:
 again: clean all
 
 bin/tunnel.o: src/tunnel.c include/tunnel.h
-	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS)
+	$(CC) $(CC_FLAGS) -c -o $@ $<
 
 bin/protocol.o: src/protocol.c include/protocol.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
@@ -65,9 +65,11 @@ simpletun: bin/simpletun
 bin/simpletun: src/simpletun.c bin/tunnel.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS)
 
-server: bin/minivpn-serverd
-bin/minivpn-serverd: \
-	src/server/main.c bin/tunnel.o bin/protocol.o bin/tcp.o
+bin/server.o: src/server/server.c include/server.h
+	$(CC) $(CC_FLAGS) -c -o $@ $<
+
+server: bin/minivpn-server-start bin/minivpn-server-ping bin/minivpn-server-stop
+bin/minivpn-server-%: src/server/%.c bin/server.o bin/tunnel.o bin/protocol.o bin/tcp.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
 
 bin/client.o: src/client/client.c include/client.h
