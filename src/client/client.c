@@ -202,6 +202,7 @@ typedef struct {
 
 static bool eval_command(session *s, int conn, const cli_command *command)
 {
+  int err;
   cli_response res;
 
   switch (command->type) {
@@ -217,16 +218,26 @@ static bool eval_command(session *s, int conn, const cli_command *command)
     break;
   case CLI_COMMAND_UPDATE_KEY:
     debug("updating session key\n");
-    if (minivpn_update_key(s->ssl, s->tun, (const unsigned char *)command->data)) {
+    err = minivpn_update_key(s->ssl, s->tun, (const unsigned char *)command->data);
+    if (err == MINIVPN_OK) {
       res.type = CLI_RESPONSE_OK;
+    } else if (err == MINIVPN_ERR_EOF) {
+      debug("connection unexpectedly closed, shutting down\n");
+      res.type = CLI_RESPONSE_ERR;
+      *s->halt = true;
     } else {
       res.type = CLI_RESPONSE_ERR;
     }
     break;
   case CLI_COMMAND_UPDATE_IV:
     debug("updating session iv\n");
-    if (minivpn_update_iv(s->ssl, s->tun, (const unsigned char *)command->data)) {
+    err = minivpn_update_iv(s->ssl, s->tun, (const unsigned char *)command->data);
+    if (err == MINIVPN_OK) {
       res.type = CLI_RESPONSE_OK;
+    } else if (err == MINIVPN_ERR_EOF) {
+      debug("connection unexpectedly closed, shutting down\n");
+      res.type = CLI_RESPONSE_ERR;
+      *s->halt = true;
     } else {
       res.type = CLI_RESPONSE_ERR;
     }

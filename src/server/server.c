@@ -76,7 +76,12 @@ static void *out_of_band_loop(void *void_arg)
 
   while (!*arg->halt) {
     minivpn_packet pkt;
-    if (!minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt)) {
+    int err = minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt);
+    if (err == MINIVPN_ERR_EOF) {
+      debug("connection unexpectedly terminated, releasing client\n");
+      *arg->halt = true;
+      continue;
+    } else if (err != MINIVPN_OK) {
       debug("error receiving out-of-band packet\n");
       continue;
     }

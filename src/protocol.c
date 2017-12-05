@@ -141,7 +141,7 @@ err_free_tun:
   return NULL;
 }
 
-bool minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key)
+uint16_t minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key)
 {
   int err;
 
@@ -149,17 +149,17 @@ bool minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key)
   memcpy(pkt.key, key, TUNNEL_KEY_SIZE);
   if ((err = minivpn_send(ssl, MINIVPN_PKT_UPDATE_KEY, &pkt)) != MINIVPN_OK) {
     debug("error sending update key packet: %s\n", minivpn_errstr(err));
-    return false;
+    return err;
   }
   if ((err = minivpn_await_ack(ssl)) != MINIVPN_OK) {
     debug("error receiving key change acknowledgement: %s\n", minivpn_errstr(err));
-    return false;
+    return err;
   }
 
-  return tunnel_set_key(tun, key);
+  return tunnel_set_key(tun, key) ? MINIVPN_OK : MINIVPN_ERR;
 }
 
-bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv)
+uint16_t minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv)
 {
   int err;
 
@@ -167,17 +167,17 @@ bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv)
   memcpy(pkt.iv, iv, TUNNEL_IV_SIZE);
   if ((err = minivpn_send(ssl, MINIVPN_PKT_UPDATE_IV, &pkt)) != MINIVPN_OK) {
     debug("error sending update iv packet: %s\n", minivpn_errstr(err));
-    return false;
+    return err;
   }
   if ((err = minivpn_await_ack(ssl)) != MINIVPN_OK) {
     debug("error receiving iv change acknowledgement: %s\n", minivpn_errstr(err));
-    return false;
+    return err;
   }
 
-  return tunnel_set_iv(tun, iv);
+  return tunnel_set_iv(tun, iv) ? MINIVPN_OK : MINIVPN_ERR;
 }
 
-bool minivpn_client_detach(SSL *ssl)
+uint16_t minivpn_client_detach(SSL *ssl)
 {
   return minivpn_send(ssl, MINIVPN_PKT_CLIENT_DETACH, NULL);
 }
@@ -317,6 +317,8 @@ uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
     if (ret > 0) {
       togo -= ret;
       buf += ret;
+    } else if (ret == 0) {
+      return MINIVPN_ERR_EOF;
     } else {
       fprintf(stderr, "%s\n", ERR_error_string(SSL_get_error(ssl, ret), NULL));
       return MINIVPN_ERR_COMM;
@@ -353,12 +355,16 @@ const char *minivpn_errstr(uint16_t code)
   switch (code) {
   case MINIVPN_OK:
     return "ok";
+  case MINIVPN_ERR:
+    return "internal error";
   case MINIVPN_ERR_COMM:
     return "protocol error";
   case MINIVPN_ERR_PERM:
     return "permission denied";
   case MINIVPN_ERR_SERV:
     return "server error";
+  case MINIVPN_ERR_EOF:
+    return  "connection with peer unexpectedly terminated";
   default:
     return "unknown error";
   }

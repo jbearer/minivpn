@@ -43,9 +43,11 @@ typedef struct {
 } minivpn_packet;
 
 #define MINIVPN_OK                      0
-#define MINIVPN_ERR_COMM                1
-#define MINIVPN_ERR_PERM                2
-#define MINIVPN_ERR_SERV                3
+#define MINIVPN_ERR                     1
+#define MINIVPN_ERR_COMM                2
+#define MINIVPN_ERR_PERM                3
+#define MINIVPN_ERR_SERV                4
+#define MINIVPN_ERR_EOF                 5
 
 typedef struct {
   uint16_t    code;
@@ -111,8 +113,8 @@ typedef struct {
   unsigned char iv[TUNNEL_IV_SIZE];
 } minivpn_pkt_update_iv;
 
-bool minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key);
-bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv);
+uint16_t minivpn_update_key(SSL *ssl, tunnel *tun, const unsigned char *key);
+uint16_t minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv);
 
 /*
  * SESSION TERMINATION
@@ -121,7 +123,7 @@ bool minivpn_update_iv(SSL *ssl, tunnel *tun, const unsigned char *iv);
  * client sends minivpn_pkt_client_detach and closes SSL session
  * server closes tunnel and SSL session and releases resources
  */
-bool minivpn_client_detach(SSL *ssl);
+uint16_t minivpn_client_detach(SSL *ssl);
 
 /*
  * Low-level communication
