@@ -61,6 +61,9 @@ bin/protocol.o: src/protocol.c include/protocol.h
 bin/tcp.o: src/tcp.c include/tcp.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
 
+bin/password.o: src/password.c include/password.h
+	$(CC) $(CC_FLAGS) -c -o $@ $<
+
 simpletun: bin/simpletun
 bin/simpletun: src/simpletun.c bin/tunnel.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS)
@@ -68,16 +71,16 @@ bin/simpletun: src/simpletun.c bin/tunnel.o
 bin/server.o: src/server/server.c include/server.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
 
-server: bin/minivpn-server-start bin/minivpn-server-ping bin/minivpn-server-stop
-bin/minivpn-server-%: src/server/%.c bin/server.o bin/tunnel.o bin/protocol.o bin/tcp.o
-	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
+server: bin/minivpn-server-start bin/minivpn-server-ping bin/minivpn-server-stop bin/minivpn-server-user-add
+bin/minivpn-server-%: src/server/%.c bin/server.o bin/tunnel.o bin/protocol.o bin/tcp.o bin/password.o
+	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread -lncurses -lsqlite3
 
 bin/client.o: src/client/client.c include/client.h
-	$(CC) $(CC_FLAGS) -c -o $@ $< $(SSL_LIBS) -lpthread
+	$(CC) $(CC_FLAGS) -c -o $@ $<
 
 client: bin/minivpn-client-start bin/minivpn-client-ping bin/minivpn-client-stop
-bin/minivpn-client-%: src/client/%.c bin/client.o bin/tunnel.o bin/protocol.o bin/tcp.o
-	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread
+bin/minivpn-client-%: src/client/%.c bin/client.o bin/tunnel.o bin/protocol.o bin/tcp.o bin/password.o
+	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread -lncurses -lsqlite3
 
 tunnel: simpletun simpletun_net simpletun_peer stop_tunnel $(SIMPLETUN_LOGS_DIR) $(SIMPLETUN_KEY) $(SIMPLETUN_IV)
 	bin/simpletun --port $(SIMPLETUN_LOCAL_PORT) \

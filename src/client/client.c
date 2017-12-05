@@ -58,6 +58,7 @@ typedef struct {
 } session;
 
 static session *session_new(const unsigned char *key, const unsigned char *iv, const char *ca_crt,
+                            const char *username, const char *password,
                             in_addr_t server_ip, in_port_t server_port,
                             in_addr_t client_ip, in_port_t client_port,
                             in_addr_t network, in_addr_t netmask)
@@ -112,7 +113,8 @@ static session *session_new(const unsigned char *key, const unsigned char *iv, c
   }
 
   debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
-  s->tun = minivpn_client_handshake(s->ssl, key, iv, client_ip, client_port, network, netmask);
+  s->tun = minivpn_client_handshake(
+    s->ssl, key, iv, client_ip, client_port, network, netmask, username, password);
   if (s->tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
@@ -207,6 +209,7 @@ static bool eval_command(session *s, int conn, const cli_command *command)
 }
 
 int client_start(const unsigned char *key, const unsigned char *iv, const char *ca_crt,
+                 const char *username, const char *password,
                  const char *cli_socket, in_addr_t server_ip, in_port_t server_port,
                  in_addr_t client_ip, in_port_t udp_port, in_addr_t network, in_addr_t netmask)
 {
@@ -224,7 +227,7 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
   init_ssl();
 
   session *s = session_new(
-    key, iv, ca_crt, server_ip, server_port, client_ip, udp_port, network, netmask);
+    key, iv, ca_crt, username, password, server_ip, server_port, client_ip, udp_port, network, netmask);
   if (s == NULL) {
     return 1;
   }

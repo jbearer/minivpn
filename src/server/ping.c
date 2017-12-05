@@ -5,8 +5,6 @@
 
 #include "server.h"
 
-#define FILE_PATH_SIZE 100
-
 static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");

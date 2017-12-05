@@ -11,6 +11,7 @@
 #include "client.h"
 #include "debug.h"
 #include "inet.h"
+#include "password.h"
 #include "tunnel.h"
 
 #define FILE_PATH_SIZE 100
@@ -100,13 +101,19 @@ int main(int argc, char **argv)
   network = ntoh_ip(inet_addr(argv[optind++]));
   netmask = ntoh_ip(inet_addr(argv[optind++]));
 
+  char username[100];
+  char password[100];
+  prompt("Username:", username, sizeof(username));
+  prompt_password("Password:", password, sizeof(password));
+
   if (fork_daemon) {
     pid_t child = fork();
     if (child < 0) {
       perror("fork");
       return 1;
     } else if (child > 0) {
-      return 0;
+      sleep(1);
+      return client_ping(cli_socket) ? 0 : 1;
     } else {
       if (log[0] != '\0') {
         int logfd = open(log, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
@@ -122,11 +129,11 @@ int main(int argc, char **argv)
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
       }
-      return client_start(
-        key, iv, ca_crt, cli_socket, server_ip, server_port, client_ip, udp_port, network, netmask);
+      return client_start(key, iv, ca_crt, username, password, cli_socket, server_ip, server_port,
+                          client_ip, udp_port, network, netmask);
     }
   } else {
-    return client_start(
-      key, iv, ca_crt, cli_socket, server_ip, server_port, client_ip, udp_port, network, netmask);
+    return client_start(key, iv, ca_crt, username, password, cli_socket, server_ip, server_port,
+                        client_ip, udp_port, network, netmask);
   }
 }

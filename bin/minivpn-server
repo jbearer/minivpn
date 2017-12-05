@@ -4,4 +4,10 @@ set -e
 
 subcommand="$1"
 shift
+
+if [[ "$subcommand" == "user" ]]; then
+    subcommand="user-$1"
+    shift
+fi
+
 minivpn-server-"$subcommand" "$@"

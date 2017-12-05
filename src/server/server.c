@@ -115,7 +115,7 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
   return strlen(buf);
 }
 
-static void accept_client(const char *cert_file, const char *pkey_file,
+static void accept_client(const char *cert_file, const char *pkey_file, passwd_db_conn *pwddb,
                           int sockfd, in_addr_t server_ip,
                           in_addr_t server_network, in_addr_t server_netmask)
 {
@@ -173,7 +173,8 @@ static void accept_client(const char *cert_file, const char *pkey_file,
   debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n",
     client_ip_str, client_tcp_port);
 
-  tunnel *tun = minivpn_server_handshake(ssl, server_ip, udp_port++, server_network, server_netmask);
+  tunnel *tun = minivpn_server_handshake(
+    ssl, pwddb, server_ip, udp_port++, server_network, server_netmask);
   if (tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
@@ -248,6 +249,7 @@ err_accept:
 typedef struct {
   char cert_file[FILE_PATH_SIZE];
   char pkey_file[FILE_PATH_SIZE];
+  char passwd_db[FILE_PATH_SIZE];
   in_port_t tcp_port;
   in_addr_t ip;
   in_addr_t network;
@@ -264,9 +266,15 @@ static void *server_main_loop(void *void_arg)
     return NULL;
   }
 
+  passwd_db_conn *pwddb = passwd_db_connect(arg->passwd_db);
+  if (pwddb == NULL) {
+    debug("unable to open password database\n");
+    return NULL;
+  }
+
   debug("listening on port %d\n", arg->tcp_port);
   while (!arg->halt) {
-    accept_client(arg->cert_file, arg->pkey_file, sockfd, arg->ip, arg->network, arg->netmask);
+    accept_client(arg->cert_file, arg->pkey_file, pwddb, sockfd, arg->ip, arg->network, arg->netmask);
   }
 
   close(sockfd);
@@ -313,8 +321,9 @@ static bool eval_command(session *s, int conn, const cli_command *command)
   return write_n(conn, &res, sizeof(cli_response));
 }
 
-int server_start(const char *cert_file, const char *pkey_file, const char *_pkey_password,
-                 const char *cli_socket, in_addr_t ip, in_port_t tcp_port, in_port_t _udp_port,
+int server_start(const char *cert_file, const char *pkey_file, const char *passwd_db,
+                 const char *_pkey_password, const char *cli_socket,
+                 in_addr_t ip, in_port_t tcp_port, in_port_t _udp_port,
                  in_addr_t network, in_addr_t netmask)
 {
   udp_port = _udp_port;
@@ -337,6 +346,7 @@ int server_start(const char *cert_file, const char *pkey_file, const char *_pkey
   bzero(&arg, sizeof(arg));
   strncpy(arg.cert_file, cert_file, FILE_PATH_SIZE);
   strncpy(arg.pkey_file, pkey_file, FILE_PATH_SIZE);
+  strncpy(arg.passwd_db, passwd_db, FILE_PATH_SIZE);
   arg.tcp_port = tcp_port;
   arg.ip = ip;
   arg.network = network;

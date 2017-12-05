@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "debug.h"
+#include "password.h"
 #include "server.h"
 
 static void usage(const char *progname)
@@ -17,7 +18,7 @@ static void usage(const char *progname)
   fprintf(stderr, "\n");
   fprintf(stderr, "-c, --cert-file <path>: SSL certificate file (default ~/.minivpn/server.crt\n");
   fprintf(stderr, "-k, --key-file <path>: RSA private key file (default ~/.minivpn/server.key\n");
-  fprintf(stderr, "-p, --pkey-password <pword>: password for decrypting pkey-file\n");
+  fprintf(stderr, "-p, --password-db <path>: password database (default ~/.minivpn/users)\n");
   fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
   fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
   fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
@@ -41,23 +42,26 @@ int main(int argc, char **argv)
   in_addr_t netmask = -1;
   char cert_file[FILE_PATH_SIZE] = {0};
   char pkey_file[FILE_PATH_SIZE] = {0};
+  char passwd_db[FILE_PATH_SIZE];
   char pkey_password[PASSWORD_SIZE] = {0};
   char log[FILE_PATH_SIZE] = {0};
   char cli_socket[FILE_PATH_SIZE] = SERVER_DEFAULT_CLI_SOCKET;
 
   snprintf(cert_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.crt", getenv("HOME"));
   snprintf(pkey_file, FILE_PATH_SIZE - 1, "%s/.minivpn/server.key", getenv("HOME"));
+  snprintf(passwd_db, FILE_PATH_SIZE - 1, "%s/.minivpn/users", getenv("HOME"));
 
   struct option long_options[] =
   {
     {"help",          no_argument,       0, 'h'},
     {"cert-file",     required_argument, 0, 'c'},
     {"key-file",      required_argument, 0, 'k'},
-    {"pkey-password", required_argument, 0, 'p'},
+    {"password-db",   required_argument, 0, 'p'},
     {"network",       required_argument, 0, 'n'},
     {"netmask",       required_argument, 0, 'm'},
     {"tcp-port",      required_argument, 0, 't'},
     {"udp-port",      required_argument, 0, 'u'},
+    {"no-daemon",     no_argument, &fork_daemon, 0},
     {0, 0, 0, 0}
   };
 
@@ -74,7 +78,8 @@ int main(int argc, char **argv)
       strncpy(cert_file, optarg, FILE_PATH_SIZE-1);
       break;
     case 'p':
-      strncpy(pkey_password, optarg, PASSWORD_SIZE-1);
+      bzero(passwd_db, FILE_PATH_SIZE);
+      strncpy(passwd_db, optarg, FILE_PATH_SIZE-1);
       break;
     case 'n':
       network = ntoh_ip(inet_addr(optarg));
@@ -120,13 +125,16 @@ int main(int argc, char **argv)
   debug("network is 0x%x\n", network);
   debug("netmask is 0x%x\n", netmask);
 
+  prompt_password("Enter password for private key:", pkey_password, PASSWORD_SIZE);
+
   if (fork_daemon) {
     pid_t child = fork();
     if (child < 0) {
       perror("fork");
       return 1;
     } else if (child > 0) {
-      return 0;
+      sleep(1);
+      return server_ping(cli_socket) ? 0 : 1;
     } else {
       if (log[0] != '\0') {
         int logfd = open(log, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
@@ -142,11 +150,11 @@ int main(int argc, char **argv)
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
       }
-      return server_start(cert_file, pkey_file, pkey_password, cli_socket,
+      return server_start(cert_file, pkey_file, passwd_db, pkey_password, cli_socket,
                           server_ip, tcp_port, udp_port, network, netmask);
     }
   } else {
-    return server_start(cert_file, pkey_file, pkey_password, cli_socket,
+    return server_start(cert_file, pkey_file, passwd_db, pkey_password, cli_socket,
                           server_ip, tcp_port, udp_port, network, netmask);
   }
 
