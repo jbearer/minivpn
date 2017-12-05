@@ -63,6 +63,7 @@ typedef struct {
   unsigned char  iv[TUNNEL_IV_SIZE];
   in_addr_t      client_ip;
   in_port_t      client_port;
+  tunnel_id_t    client_tunnel;
   in_addr_t      client_network;
   in_addr_t      client_netmask;
   char           username[MINIVPN_USERNAME_SIZE];
@@ -72,18 +73,20 @@ typedef struct {
 typedef struct {
   in_addr_t    server_ip;
   in_port_t    server_port;
+  tunnel_id_t  server_tunnel;
   in_addr_t    server_network;
   in_addr_t    server_netmask;
 } minivpn_pkt_server_handshake;
 
-tunnel *minivpn_client_handshake(SSL *ssl, const unsigned char *key, const unsigned char *iv,
-                                 in_addr_t client_ip, in_port_t client_port,
-                                 in_addr_t client_network, in_addr_t client_netmask,
+tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
+                                 const unsigned char *key, const unsigned char *iv,
+                                 uint32_t client_ip, uint16_t client_port,
+                                 uint32_t client_network, uint32_t client_netmask,
                                  const char *username, const char *password);
 
-tunnel *minivpn_server_handshake(SSL *ssl, passwd_db_conn *pwddb,
-                                 in_addr_t server_ip, in_port_t server_port,
-                                 in_addr_t server_network, in_addr_t server_netmask);
+tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
+                                 uint32_t server_ip, uint16_t server_port,
+                                 uint32_t server_network, uint32_t server_netmask);
 
 /*
  * SESSION TERMINATION

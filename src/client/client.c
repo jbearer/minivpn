@@ -52,6 +52,7 @@ static void *tun_loop(void *void_arg)
 typedef struct {
   SSL_CTX *ctx;
   SSL *ssl;
+  tunnel_server *tunserv;
   tunnel *tun;
   bool *halt;
   pthread_t tunnel_thread;
@@ -82,6 +83,12 @@ static session *session_new(const unsigned char *key, const unsigned char *iv, c
   inet_ntop(AF_INET, &sin.sin_addr, server_ip_str, INET_ADDRSTRLEN);
   debug("connected to %s:%" PRIu16 "\n", server_ip_str, server_port);
 #endif
+
+  s->tunserv = tunnel_server_new(client_port);
+  if (s->tunserv == NULL) {
+    debug("error creating tunnel server\n");
+    goto err_tun_serv;
+  }
 
   s->ctx = SSL_CTX_new(SSLv23_client_method());
   if (s->ctx == NULL) {
@@ -114,7 +121,7 @@ static session *session_new(const unsigned char *key, const unsigned char *iv, c
 
   debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
   s->tun = minivpn_client_handshake(
-    s->ssl, key, iv, client_ip, client_port, network, netmask, username, password);
+    s->ssl, s->tunserv, key, iv, client_ip, client_port, network, netmask, username, password);
   if (s->tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
@@ -150,6 +157,8 @@ err_ssl_new:
 err_load_cert:
   SSL_CTX_free(s->ctx);
 err_ctx_new:
+  tunnel_server_delete(s->tunserv);
+err_tun_serv:
 err_tcp_client:
   free(s);
 err_malloc:
@@ -167,6 +176,8 @@ static void session_delete(session *s)
   SSL_shutdown(s->ssl);
   SSL_free(s->ssl);
   SSL_CTX_free(s->ctx);
+
+  tunnel_server_delete(s->tunserv);
 
   free(s);
 }

@@ -12,12 +12,19 @@
 #include "protocol.h"
 #include "tunnel.h"
 
-tunnel *minivpn_client_handshake(SSL *ssl, const unsigned char *key, const unsigned char *iv,
+tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
+                                 const unsigned char *key, const unsigned char *iv,
                                  uint32_t client_ip, uint16_t client_port,
                                  uint32_t client_network, uint32_t client_netmask,
                                  const char *username, const char *password)
 {
   uint16_t err;
+
+  tunnel *tun = tunnel_new(tunserv, key, iv);
+  if (tun == NULL) {
+    debug("error creating tunnel\n");
+    return NULL;
+  }
 
   minivpn_pkt_client_handshake client_init;
   bzero(&client_init, sizeof(client_init));
@@ -25,43 +32,44 @@ tunnel *minivpn_client_handshake(SSL *ssl, const unsigned char *key, const unsig
   memcpy(&client_init.iv, iv, TUNNEL_IV_SIZE);
   client_init.client_ip = client_ip;
   client_init.client_port = client_port;
+  client_init.client_tunnel = tunnel_id(tun);
   client_init.client_network = client_network;
   client_init.client_netmask = client_netmask;
   strncpy(client_init.username, username, MINIVPN_USERNAME_SIZE - 1);
   strncpy(client_init.password, password, MINIVPN_PASSWORD_SIZE - 1);
   if ((err = minivpn_send(ssl, MINIVPN_PKT_CLIENT_HANDSHAKE, &client_init)) != MINIVPN_OK) {
     debug("unable to send session initialization packet: %s\n", minivpn_errstr(err));
-    return NULL;
+    goto err_free_tun;
   }
 
   minivpn_pkt_server_handshake server_init;
   if ((err = minivpn_recv(ssl, MINIVPN_PKT_SERVER_HANDSHAKE, &server_init)) != MINIVPN_OK) {
     debug("error receiving server handhsake: %s\n", minivpn_errstr(err));
-    return NULL;
+    goto err_free_tun;
   }
 
-  tunnel *tun = tunnel_new(key, iv, server_init.server_ip, server_init.server_port, client_port);
-  if (tun == NULL) {
-    debug("error creating tunnel\n");
-    return NULL;
+  if (!tunnel_connect(tun, server_init.server_ip, server_init.server_port, server_init.server_tunnel)) {
+    debug("error connecting tunnel\n");
+    goto err_free_tun;
   }
-
   if (!tunnel_route(tun, server_init.server_network, server_init.server_netmask)) {
     debug("error routing tunnel\n");
-    tunnel_delete(tun);
-    return NULL;
+    goto err_free_tun;
   }
 
   if ((err = minivpn_ack(ssl)) != MINIVPN_OK) {
     debug("unable to acknowledge session: %s\n", minivpn_errstr(err));
-    tunnel_delete(tun);
-    return NULL;
+    goto err_free_tun;
   }
 
   return tun;
+
+err_free_tun:
+  tunnel_delete(tun);
+  return NULL;
 }
 
-tunnel *minivpn_server_handshake(SSL *ssl, passwd_db_conn *pwddb,
+tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
                                  uint32_t server_ip, uint16_t server_port,
                                  uint32_t server_network, uint32_t server_netmask)
 {
@@ -81,37 +89,41 @@ tunnel *minivpn_server_handshake(SSL *ssl, passwd_db_conn *pwddb,
     return NULL;
   }
 
-  tunnel *tun = tunnel_new(
-    client_init.key, client_init.iv, client_init.client_ip, client_init.client_port, server_port);
+  tunnel *tun = tunnel_new(tunserv, client_init.key, client_init.iv);
   if (tun == NULL) {
     debug("could not create tunnel\n");
     return NULL;
   }
-
+  if (!tunnel_connect(tun, client_init.client_ip, client_init.client_port, client_init.client_tunnel)) {
+    debug("could not connect tunnel\n");
+    goto err_free_tun;
+  }
   if (!tunnel_route(tun, client_init.client_network, client_init.client_netmask)) {
     debug("could not route tunnel\n");
-    tunnel_delete(tun);
-    return NULL;
+    goto err_free_tun;
   }
 
   minivpn_pkt_server_handshake server_init;
   server_init.server_ip = server_ip;
   server_init.server_port = server_port;
+  server_init.server_tunnel = tunnel_id(tun);
   server_init.server_network = server_network;
   server_init.server_netmask = server_netmask;
   if ((err = minivpn_send(ssl, MINIVPN_PKT_SERVER_HANDSHAKE, &server_init)) != MINIVPN_OK) {
     debug("error sending server handshake: %s\n", minivpn_errstr(err));
-    tunnel_delete(tun);
-    return NULL;
+    goto err_free_tun;
   }
 
   if ((err = minivpn_await_ack(ssl)) != MINIVPN_OK) {
     debug("error receiving session acknowledgement from client: %s\n", minivpn_errstr(err));
-    tunnel_delete(tun);
-    return NULL;
+    goto err_free_tun;
   }
 
   return tun;
+
+err_free_tun:
+  tunnel_delete(tun);
+  return NULL;
 }
 
 bool minivpn_client_detach(SSL *ssl)
@@ -123,6 +135,7 @@ static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake 
 {
   p->client_ip = hton_ip(p->client_ip);
   p->client_port = hton_port(p->client_port);
+  p->client_tunnel = hton_tunnel_id(p->client_tunnel);
   p->client_network = hton_ip(p->client_network);
   p->client_netmask = hton_ip(p->client_netmask);
 }
@@ -131,6 +144,7 @@ static void server_handshake_to_network_byte_order(minivpn_pkt_server_handshake 
 {
   p->server_ip = hton_ip(p->server_ip);
   p->server_port = hton_port(p->server_port);
+  p->server_tunnel = hton_tunnel_id(p->server_tunnel);
   p->server_network = hton_ip(p->server_network);
   p->server_netmask = hton_ip(p->server_netmask);
 }
@@ -167,6 +181,7 @@ static void client_handshake_to_host_byte_order(minivpn_pkt_client_handshake *p)
 {
   p->client_ip = ntoh_ip(p->client_ip);
   p->client_port = ntoh_port(p->client_port);
+  p->client_tunnel = ntoh_tunnel_id(p->client_tunnel);
   p->client_network = ntoh_ip(p->client_network);
   p->client_netmask = ntoh_ip(p->client_netmask);
 }
@@ -175,6 +190,7 @@ static void server_handshake_to_host_byte_order(minivpn_pkt_server_handshake *p)
 {
   p->server_ip = ntoh_ip(p->server_ip);
   p->server_port = ntoh_port(p->server_port);
+  p->server_tunnel = ntoh_tunnel_id(p->server_tunnel);
   p->server_network = ntoh_ip(p->server_network);
   p->server_netmask = ntoh_ip(p->server_netmask);
 }

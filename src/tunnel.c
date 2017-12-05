@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#include "debug.h"
 #include "inet.h"
 #include "tunnel.h"
 
@@ -23,15 +25,12 @@
 #define HMAC_SIZE (256/8)
 
 #ifdef DEBUG
-#define tunnel_debug(t, fmt, ...) fprintf(stderr, "tunnel %" PRId64 ": " fmt, t->dev, ##__VA_ARGS__);
+#define tunnel_debug(t, fmt, ...) fprintf(stderr, "tunnel %" PRItunid ": " fmt, t->id, ##__VA_ARGS__);
 #else
 #define tunnel_debug(...)
 #endif
 
 #define OPENSSL_ERR() { ERR_print_errors_fp(stderr); result = -1; goto openssl_cleanup; }
-
-// Free device name bitmap
-static uint64_t _free_devices[MAX_TUNNELS / 64] = {(uint64_t)-1};
 
 static void close_module()
 {
@@ -50,30 +49,6 @@ static void init_module()
   OpenSSL_add_all_algorithms();
   OPENSSL_config(NULL);
   atexit(close_module);
-}
-
-static int64_t alloc_dev()
-{
-  for (size_t block = 0; block < MAX_TUNNELS / 64; ++block) {
-    if (_free_devices[block]) {
-      for (unsigned bit = 0; bit < 64; ++bit) {
-        uint64_t mask = 1 << bit;
-        if (_free_devices[block] & mask) {
-          _free_devices[block] &= ~mask;
-          return 64*block + bit;
-        }
-      }
-    }
-  }
-  return -1;
-}
-
-static void dealloc_dev(int64_t dev)
-{
-  size_t block = dev / 64;
-  size_t bit = dev % 64;
-  uint64_t mask = 1 << bit;
-  _free_devices[block] |= mask;
 }
 
 static int open_tunnel(char *dev)
@@ -105,15 +80,172 @@ static int open_tunnel(char *dev)
   return fd;
 }
 
+tunnel_id_t hton_tunnel_id(tunnel_id_t t)
+{
+  return htonl(t);
+}
+
+tunnel_id_t ntoh_tunnel_id(tunnel_id_t t)
+{
+  return ntohl(t);
+}
+
+struct __tunnel_server {
+  pthread_t thread;
+  int sockfd;
+  volatile bool halt;
+  pthread_mutex_t lock;
+  tunnel *tunnels[MAX_TUNNELS];
+};
+
+static void net_to_tap(tunnel *t, unsigned char *packet, size_t nbytes);
+
+void *tunnel_server_loop(void *arg)
+{
+  tunnel_server *s = (tunnel_server *)arg;
+
+  while (!s->halt) {
+    fd_set rd_set;
+    FD_ZERO(&rd_set);
+    FD_SET(s->sockfd, &rd_set);
+
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    int ret = select(s->sockfd + 1, &rd_set, NULL, NULL, &timeout);
+
+    if (ret < 0 && (errno == EINTR)) {
+      continue;
+    }
+    if (ret < 0) {
+      perror("select()");
+      exit(1);
+    }
+
+    if (!FD_ISSET(s->sockfd, &rd_set)) {
+      continue;
+    }
+
+    unsigned char packet[BUFFER_SIZE];
+    ssize_t nbytes = recvfrom(s->sockfd, packet, BUFFER_SIZE, 0, NULL, NULL);
+    if (nbytes == -1) {
+      perror("recvfrom");
+      continue;
+    }
+
+    if (nbytes == 0) {
+      // peer terminated
+      return NULL;
+    }
+
+    tunnel_id_t id = ntoh_tunnel_id(*(tunnel_id_t *)packet);
+    if (id >= MAX_TUNNELS) {
+      debug("received packet with invalid id %" PRItunid "\n", id);
+      continue;
+    }
+
+    pthread_mutex_lock(&s->lock);
+    tunnel *tun = s->tunnels[id];
+    if (tun == NULL) {
+      debug("received packet for deallocated tunnel %" PRItunid "\n", id);
+      goto next_packet;
+    }
+
+    net_to_tap(tun, packet + sizeof(tunnel_id_t), nbytes - sizeof(tunnel_id_t));
+
+next_packet:
+    pthread_mutex_unlock(&s->lock);
+  }
+
+  return NULL;
+}
+
+tunnel_server *tunnel_server_new(in_port_t port)
+{
+  init_module();
+
+  tunnel_server *s = (tunnel_server *)malloc(sizeof(tunnel_server));
+  if (s == NULL) {
+    perror("malloc");
+    return NULL;
+  }
+
+  s->halt = false;
+  bzero(s->tunnels, sizeof(s->tunnels));
+
+  // Open network socket
+  s->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (s->sockfd < 0) {
+    perror("socket");
+    goto err_sock;
+  }
+
+  // Avoid EADDRINUSE error on bind()
+  int optval = 1;
+  if(setsockopt(s->sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
+    perror("setsockopt");
+    goto err_sockopt;
+  }
+
+  struct sockaddr_in sa;
+  bzero(&sa, sizeof(sa));
+  sa.sin_family = AF_INET;
+  sa.sin_addr.s_addr = hton_ip(INADDR_ANY);
+  sa.sin_port = hton_port(port);
+  if (bind(s->sockfd, (struct sockaddr*)&sa, sizeof(sa)) < 0){
+    perror("bind");
+    goto err_bind;
+  }
+  debug("tunnel server bound to port %" PRIport "\n", port);
+
+  int pthread_err;
+  if ((pthread_err = pthread_mutex_init(&s->lock, NULL)) != 0) {
+    debug("error initializing server mutex: %s\n", strerror(pthread_err));
+    goto err_mutex_init;
+  }
+
+  if ((pthread_err = pthread_create(&s->thread, NULL, tunnel_server_loop, s)) != 0) {
+    debug("error creating tunnel server thread: %s\n", strerror(pthread_err));
+    goto err_thread_create;
+  }
+
+  return s;
+
+err_thread_create:
+err_mutex_init:
+err_bind:
+err_sockopt:
+  close(s->sockfd);
+err_sock:
+  free(s);
+  return NULL;
+}
+
+void tunnel_server_delete(tunnel_server *s)
+{
+  s->halt = true;
+  for (tunnel_id_t t = 0; t < MAX_TUNNELS; ++t) {
+    if (s->tunnels[t] != NULL) {
+      tunnel_delete(s->tunnels[t]);
+    }
+  }
+
+  pthread_join(s->thread, NULL);
+  close(s->sockfd);
+  free(s);
+}
+
 struct __tunnel {
+  tunnel_server *server;
   unsigned char key[TUNNEL_KEY_SIZE];
   unsigned char iv[TUNNEL_IV_SIZE];
   EVP_PKEY *pkey;
-  int64_t dev;
-  int tap_fd;
-  int net_fd;
-  struct sockaddr_in sin_local;
-  struct sockaddr_in sin_remote;
+  tunnel_id_t id;
+  struct sockaddr_in peer_addr;
+  tunnel_id_t peer_id;
+  int sockfd;
+  int tunfd;
   bool halt;
   bool running;
   size_t tap_to_net_count;
@@ -134,7 +266,7 @@ static bool isup(tunnel *t)
   }
 
   memset(&ifr, 0, sizeof ifr);
-  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRId64, t->dev);
+  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRItunid, t->id);
 
   if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
     tunnel_debug(t, "ifup: error getting interface flags: %s\n", strerror(errno));
@@ -156,7 +288,7 @@ static bool ifup(tunnel *t)
   }
 
   memset(&ifr, 0, sizeof ifr);
-  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRId64, t->dev);
+  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRItunid, t->id);
 
   if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
     tunnel_debug(t, "ifup: error getting interface flags: %s\n", strerror(errno));
@@ -170,7 +302,7 @@ static bool ifup(tunnel *t)
     return false;
   }
 
-  tunnel_debug(t, "brought up interface tun%" PRId64 "\n", t->dev);
+  tunnel_debug(t, "brought up interface tun%" PRItunid "\n", t->id);
   return true;
 }
 
@@ -186,7 +318,7 @@ static bool ifdown(tunnel *t)
   }
 
   memset(&ifr, 0, sizeof ifr);
-  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRId64, t->dev);
+  snprintf(ifr.ifr_name, IFNAMSIZ, "tun%" PRItunid, t->id);
 
   if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
     tunnel_debug(t, "ifdown: error getting interface flags: %s\n", strerror(errno));
@@ -200,7 +332,7 @@ static bool ifdown(tunnel *t)
     return false;
   }
 
-  tunnel_debug(t, "shut down interface tun%" PRId64 "\n", t->dev);
+  tunnel_debug(t, "shut down interface tun%" PRItunid "\n", t->id);
   return true;
 }
 
@@ -209,13 +341,13 @@ static void tunnel_unroute(tunnel *t)
   if (t->network[0] != '\0') {
     // HACK should replace this with an ioctl SIOCADDRT implementation
     char comm[100] = {0};
-    sprintf(comm, "route del -net %s netmask %s dev tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+    sprintf(comm, "route del -net %s netmask %s dev tun%" PRItunid "\n", t->network, t->netmask, t->id);
     if (system(comm) != 0) {
-      tunnel_debug(t, "could not delete route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+      tunnel_debug(t, "could not delete route %s %s tun%" PRItunid "\n", t->network, t->netmask, t->id);
     }
   }
 
-  tunnel_debug(t, "deleted route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+  tunnel_debug(t, "deleted route %s %s tun%" PRItunid "\n", t->network, t->netmask, t->id);
 }
 
 bool tunnel_route(tunnel *t, in_addr_t network, in_addr_t netmask)
@@ -243,26 +375,27 @@ bool tunnel_route(tunnel *t, in_addr_t network, in_addr_t netmask)
 
   // HACK should replace this with an ioctl SIOCADDRT implementation
   char comm[100] = {0};
-  sprintf(comm, "route add -net %s netmask %s dev tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+  sprintf(comm, "route add -net %s netmask %s dev tun%" PRItunid "\n", t->network, t->netmask, t->id);
   if (system(comm) != 0) {
-    tunnel_debug(t, "could not add route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+    tunnel_debug(t, "could not add route %s %s tun%" PRItunid "\n", t->network, t->netmask, t->id);
     return false;
   }
 
-  tunnel_debug(t, "added route %s %s tun%" PRId64 "\n", t->network, t->netmask, t->dev);
+  tunnel_debug(t, "added route %s %s tun%" PRItunid "\n", t->network, t->netmask, t->id);
   return true;
 }
 
-tunnel *tunnel_new(const unsigned char *key, const unsigned char *iv,
-                   in_addr_t peer_ip, in_port_t peer_port, in_port_t local_port)
+tunnel *tunnel_new(tunnel_server *s, const unsigned char *key, const unsigned char *iv)
 {
-  init_module();
-
   tunnel *t = (tunnel *)malloc(sizeof(tunnel));
   if (!t) {
     perror("malloc");
     return NULL;
   }
+
+  t->server = s;
+
+  pthread_mutex_lock(&t->server->lock);
 
   bzero(t->network, sizeof(t->network));
   bzero(t->netmask, sizeof(t->netmask));
@@ -278,63 +411,44 @@ tunnel *tunnel_new(const unsigned char *key, const unsigned char *iv,
   }
 
   // Allocate device id
-  t->dev = alloc_dev();
-  if (t->dev < 0) {
+  for (t->id = 0; t->id < MAX_TUNNELS; ++t->id) {
+    if (t->server->tunnels[t->id] == NULL) {
+      t->server->tunnels[t->id] = t;
+      break;
+    }
+  }
+  if (t->id == MAX_TUNNELS) {
     fprintf(stderr, "out of devices\n");
     goto err_dev;
   }
 
   // Open tunnel
   char dev[100];
-  sprintf(dev, "tun%" PRId64, t->dev);
-  t->tap_fd = open_tunnel(dev);
-  if (t->tap_fd < 0) {
+  sprintf(dev, "tun%" PRItunid, t->id);
+  t->tunfd = open_tunnel(dev);
+  if (t->tunfd < 0) {
     goto err_tun;
   }
 
   // Open network socket
-  t->net_fd = socket(AF_INET, SOCK_DGRAM, 0);
-  if (t->net_fd < 0) {
+  t->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (t->sockfd < 0) {
     perror("socket");
     goto err_sock;
   }
 
-  // Avoid EADDRINUSE error on bind()
-  int optval = 1;
-  if(setsockopt(t->net_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
-    perror("setsockopt");
-    goto err_sockopt;
-  }
-
-  memset(&t->sin_local, 0, sizeof(t->sin_local));
-  t->sin_local.sin_family = AF_INET;
-  t->sin_local.sin_addr.s_addr = hton_ip(INADDR_ANY);
-  t->sin_local.sin_port = hton_port(local_port);
-  if (bind(t->net_fd, (struct sockaddr*)&t->sin_local, sizeof(t->sin_local)) < 0){
-    perror("bind");
-    goto err_bind;
-  }
-  tunnel_debug(t, "bound to port %" PRIport "\n", local_port);
-
-  // Assign the destination address
-  memset(&t->sin_remote, 0, sizeof(t->sin_remote));
-  t->sin_remote.sin_family = AF_INET;
-  t->sin_remote.sin_addr.s_addr = hton_ip(peer_ip);
-  t->sin_remote.sin_port = hton_port(peer_port);
-  tunnel_debug(t, "peer at %" PRIip ":%" PRIport "\n", peer_ip, peer_port);
+  pthread_mutex_unlock(&t->server->lock);
 
   return t;
 
-err_bind:
-err_sockopt:
-  close(t->net_fd);
 err_sock:
-  close(t->tap_fd);
+  close(t->tunfd);
 err_tun:
-  dealloc_dev(t->dev);
+  t->server->tunnels[t->id] = NULL;
 err_dev:
   EVP_PKEY_free(t->pkey);
 err_pkey:
+  pthread_mutex_unlock(&t->server->lock);
   return NULL;
 }
 
@@ -342,13 +456,18 @@ void tunnel_delete(tunnel *t)
 {
   tunnel_debug(t, "closing\n");
 
+  pthread_mutex_lock(&t->server->lock);
+
   tunnel_stop(t);
   tunnel_unroute(t);
   ifdown(t);
   EVP_PKEY_free(t->pkey);
-  dealloc_dev(t->dev);
-  close(t->tap_fd);
-  close(t->net_fd);
+  close(t->tunfd);
+  close(t->sockfd);
+  t->server->tunnels[t->id] = NULL;
+  free(t);
+
+  pthread_mutex_unlock(&t->server->lock);
 }
 
 static ssize_t encrypt(unsigned char *key, unsigned char *iv,
@@ -490,7 +609,7 @@ static int hmac_verify(EVP_PKEY *key, unsigned char *msg, int msg_len, unsigned 
 static void tap_to_net(tunnel *t) {
   unsigned char plain[BUFFER_SIZE];
 
-  ssize_t nbytes = read(t->tap_fd, plain, BUFFER_SIZE);
+  ssize_t nbytes = read(t->tunfd, plain, BUFFER_SIZE);
   if (nbytes == -1) {
     perror("read");
     return;
@@ -500,8 +619,11 @@ static void tap_to_net(tunnel *t) {
   tunnel_debug(t, "TAP2NET %zu: Read %zd bytes from the tap interface\n", t->tap_to_net_count, nbytes);
 
   unsigned char packet[BUFFER_SIZE];
-  unsigned char *hmac = packet;
-  unsigned char *cipher = packet + HMAC_SIZE;
+  tunnel_id_t *peer_id = (tunnel_id_t *)packet;
+  unsigned char *hmac = packet + sizeof(tunnel_id_t);
+  unsigned char *cipher = packet + sizeof(tunnel_id_t) + HMAC_SIZE;
+
+  *peer_id = t->peer_id;
 
   ssize_t cipher_len = encrypt(t->key, t->iv, plain, nbytes, cipher);
   if (cipher_len == -1) {
@@ -516,8 +638,8 @@ static void tap_to_net(tunnel *t) {
     return;
   }
 
-  ssize_t nwrite = sendto(t->net_fd, packet, HMAC_SIZE + cipher_len, 0,
-                          (const struct sockaddr *)&t->sin_remote, sizeof(t->sin_remote));
+  ssize_t nwrite = sendto(t->sockfd, packet, sizeof(tunnel_id_t) + HMAC_SIZE + cipher_len, 0,
+                          (const struct sockaddr *)&t->peer_addr, sizeof(t->peer_addr));
   if (nwrite == -1) {
     perror("sendto");
     return;
@@ -526,19 +648,7 @@ static void tap_to_net(tunnel *t) {
   tunnel_debug(t, "TAP2NET %zu: Written %zd bytes to the network\n", t->tap_to_net_count, nwrite);
 }
 
-static void net_to_tap(tunnel *t) {
-  unsigned char packet[BUFFER_SIZE];
-
-  ssize_t nbytes = recvfrom(t->net_fd, packet, BUFFER_SIZE, 0, NULL, NULL);
-  if (nbytes == -1) {
-    perror("recvfrom");
-    return;
-  }
-
-  if (nbytes == 0) {
-    /* ctrl-c at the other end */
-    exit(0);
-  }
+static void net_to_tap(tunnel *t, unsigned char *packet, size_t nbytes) {
   t->net_to_tap_count++;
   tunnel_debug(t, "NET2TAP %zu: Read %zd bytes from the network\n", t->net_to_tap_count, nbytes);
 
@@ -561,7 +671,7 @@ static void net_to_tap(tunnel *t) {
   }
 
   /* now plain[] contains a full packet or frame, write it into the tun/tap interface */
-  ssize_t nwrite = write(t->tap_fd, plain, plain_len);
+  ssize_t nwrite = write(t->tunfd, plain, plain_len);
   if (nwrite == -1) {
     perror("write");
     return;
@@ -573,19 +683,16 @@ void tunnel_loop(tunnel *t)
 {
   tunnel_debug(t, "beginning loop\n");
 
-  int maxfd = t->net_fd > t->tap_fd ? t->net_fd : t->tap_fd;
-
   while (!t->halt) {
     fd_set rd_set;
     FD_ZERO(&rd_set);
-    FD_SET(t->tap_fd, &rd_set);
-    FD_SET(t->net_fd, &rd_set);
+    FD_SET(t->tunfd, &rd_set);
 
     struct timeval timeout;
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
 
-    int ret = select(maxfd + 1, &rd_set, NULL, NULL, &timeout);
+    int ret = select(t->tunfd + 1, &rd_set, NULL, NULL, &timeout);
 
     if (ret < 0 && (errno == EINTR)) {
       continue;
@@ -595,11 +702,8 @@ void tunnel_loop(tunnel *t)
       exit(1);
     }
 
-    if (FD_ISSET(t->tap_fd, &rd_set)) {
+    if (FD_ISSET(t->tunfd, &rd_set)) {
       tap_to_net(t);
-    }
-    if (FD_ISSET(t->net_fd, &rd_set)) {
-      net_to_tap(t);
     }
   }
 
@@ -611,4 +715,18 @@ void tunnel_stop(tunnel *t)
 {
   t->halt = true;
   while (t->running);
+}
+
+tunnel_id_t tunnel_id(tunnel *t)
+{
+  return t->id;
+}
+
+bool tunnel_connect(tunnel *t, in_addr_t peer_ip, in_port_t peer_port, tunnel_id_t peer_tunnel)
+{
+  t->peer_addr.sin_family = AF_INET;
+  t->peer_addr.sin_addr.s_addr = hton_ip(peer_ip);
+  t->peer_addr.sin_port = hton_port(peer_port);
+  t->peer_id = hton_tunnel_id(peer_tunnel);
+  return true;
 }

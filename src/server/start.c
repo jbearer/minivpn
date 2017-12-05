@@ -22,7 +22,7 @@ static void usage(const char *progname)
   fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
   fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
   fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
-  fprintf(stderr, "-u, --udp-port <port>: beginning of port range to use for UDP tunnels (default 55555)\n");
+  fprintf(stderr, "-u, --udp-port <port>: UDP port for tunnels (default 55555)\n");
   fprintf(stderr, "-s, --cli-socket <file>: unix socket to use for CLI commands (default is %s)\n",
     SERVER_DEFAULT_CLI_SOCKET);
   fprintf(stderr, "-o, --log-file <file>: direct output to file (default is /dev/null)\n");

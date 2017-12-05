@@ -19,7 +19,6 @@
 #include "tcp.h"
 #include "tunnel.h"
 
-static in_port_t udp_port = 55555;
 static char pkey_password[PASSWORD_SIZE];
 
 static void init_ssl()
@@ -115,8 +114,8 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
   return strlen(buf);
 }
 
-static void accept_client(const char *cert_file, const char *pkey_file, passwd_db_conn *pwddb,
-                          int sockfd, in_addr_t server_ip,
+static void accept_client(const char *cert_file, const char *pkey_file, tunnel_server *tunserv,
+                          passwd_db_conn *pwddb, int sockfd, in_addr_t server_ip, in_port_t udp_port,
                           in_addr_t server_network, in_addr_t server_netmask)
 {
   struct sockaddr_in sin;
@@ -174,7 +173,7 @@ static void accept_client(const char *cert_file, const char *pkey_file, passwd_d
     client_ip_str, client_tcp_port);
 
   tunnel *tun = minivpn_server_handshake(
-    ssl, pwddb, server_ip, udp_port++, server_network, server_netmask);
+    ssl, tunserv, pwddb, server_ip, udp_port, server_network, server_netmask);
   if (tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
@@ -251,6 +250,7 @@ typedef struct {
   char pkey_file[FILE_PATH_SIZE];
   char passwd_db[FILE_PATH_SIZE];
   in_port_t tcp_port;
+  in_port_t udp_port;
   in_addr_t ip;
   in_addr_t network;
   in_addr_t netmask;
@@ -263,21 +263,33 @@ static void *server_main_loop(void *void_arg)
 
   int sockfd = open_socket(arg->tcp_port);
   if (sockfd < 0) {
-    return NULL;
+    goto err_sock;
   }
 
   passwd_db_conn *pwddb = passwd_db_connect(arg->passwd_db);
   if (pwddb == NULL) {
     debug("unable to open password database\n");
-    return NULL;
+    goto err_pwddb;
+  }
+
+  tunnel_server *tunserv = tunnel_server_new(arg->udp_port);
+  if (tunserv == NULL) {
+    debug("unable to create tunnel server\n");
+    goto err_tunserv;
   }
 
   debug("listening on port %d\n", arg->tcp_port);
   while (!arg->halt) {
-    accept_client(arg->cert_file, arg->pkey_file, pwddb, sockfd, arg->ip, arg->network, arg->netmask);
+    accept_client(arg->cert_file, arg->pkey_file, tunserv, pwddb, sockfd, arg->ip, arg->udp_port,
+                  arg->network, arg->netmask);
   }
 
+  tunnel_server_delete(tunserv);
+err_tunserv:
+  passwd_db_close(pwddb);
+err_pwddb:
   close(sockfd);
+err_sock:
   return NULL;
 }
 
@@ -323,10 +335,9 @@ static bool eval_command(session *s, int conn, const cli_command *command)
 
 int server_start(const char *cert_file, const char *pkey_file, const char *passwd_db,
                  const char *_pkey_password, const char *cli_socket,
-                 in_addr_t ip, in_port_t tcp_port, in_port_t _udp_port,
+                 in_addr_t ip, in_port_t tcp_port, in_port_t udp_port,
                  in_addr_t network, in_addr_t netmask)
 {
-  udp_port = _udp_port;
   strncpy(pkey_password, _pkey_password, PASSWORD_SIZE);
 
   // Set up a TCP server to handle CLI commands
@@ -348,6 +359,7 @@ int server_start(const char *cert_file, const char *pkey_file, const char *passw
   strncpy(arg.pkey_file, pkey_file, FILE_PATH_SIZE);
   strncpy(arg.passwd_db, passwd_db, FILE_PATH_SIZE);
   arg.tcp_port = tcp_port;
+  arg.udp_port = udp_port;
   arg.ip = ip;
   arg.network = network;
   arg.netmask = netmask;

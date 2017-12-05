@@ -37,7 +37,7 @@ ifndef SIMPLETUN_IV
 SIMPLETUN_IV = bin/iv
 endif
 
-all: $(SIMPLETUN_LOGS_DIR) simpletun server client
+all: $(SIMPLETUN_LOGS_DIR) server client
 
 clean:
 	rm -f ./bin/key
