@@ -313,6 +313,7 @@ static bool send_cli_command(const char *sock, const cli_command *command, cli_r
   bool result;
 
   struct sockaddr_un sa;
+  bzero(&sa, sizeof(sa));
   sa.sun_family = AF_UNIX;
   strncpy(sa.sun_path + 1, sock, 106);
   int sockfd;
