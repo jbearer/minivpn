@@ -279,6 +279,22 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
   }
 }
 
+int minivpn_avail(SSL *ssl)
+{
+  minivpn_packet pkt;
+  ssize_t navail = SSL_peek(ssl, &pkt, sizeof(pkt));
+  if (navail < 0) {
+    ERR_print_errors_fp(stderr);
+    return -2;
+  } else if (navail == 0) {
+    return -1;
+  } else if ((size_t)navail < sizeof(pkt)) {
+    return 0;
+  } else {
+    return 1;
+  }
+}
+
 uint16_t minivpn_send_raw(SSL *ssl, uint16_t type, const void *data, size_t data_len)
 {
   minivpn_packet pkt;

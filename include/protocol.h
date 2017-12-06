@@ -131,6 +131,7 @@ uint16_t minivpn_detach(SSL *ssl);
  */
 void minivpn_to_network_byte_order(minivpn_packet *pkt);
 void minivpn_to_host_byte_order(minivpn_packet *pkt);
+int minivpn_avail(SSL *ssl);
 uint16_t minivpn_send_raw(SSL *ssl, uint16_t type, const void *data, size_t data_len);
 uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len);
 

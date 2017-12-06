@@ -275,6 +275,34 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
   }
 
   while (!*s->halt) {
+    // Check for messages from the server. The only message sent by the server is a detach
+    int avail = minivpn_avail(s->ssl);
+    if (avail != 0) {
+      // Server died or cut us off
+      debug("connection to server terminated\n");
+      *s->halt = true;
+      break;
+    }
+
+    // Use select so we can timeout
+    fd_set accept_set;
+    FD_ZERO(&accept_set);
+    FD_SET(sockfd, &accept_set);
+
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    debug("waiting for CLI connection\n");
+    int ret = select(sockfd + 1, &accept_set, NULL, NULL, &timeout);
+    if (ret < 0) {
+      perror("select");
+      continue;
+    } else if (!FD_ISSET(sockfd, &accept_set)) {
+      debug("timed out waiting for CLI connection\n");
+      continue;
+    }
+
     int conn = accept(sockfd, NULL, NULL);
     if (conn < 0) {
       perror("accept");
@@ -283,6 +311,19 @@ int client_start(const unsigned char *key, const unsigned char *iv, const char *
       continue;
     }
     debug("accepted CLI connection\n");
+
+    debug("waiting for CLI command\n");
+    fd_set command_set;
+    FD_ZERO(&command_set);
+    FD_SET(conn, &command_set);
+    ret = select(conn + 1, &command_set, NULL, NULL, &timeout);
+    if (ret < 0) {
+      perror("select");
+      goto next_client;
+    } else if (!FD_ISSET(conn, &command_set)) {
+      debug("timed out waiting for CLI command\n");
+      goto next_client;
+    }
 
     cli_command command;
     if (!read_n(conn, &command, sizeof(cli_command))) {
