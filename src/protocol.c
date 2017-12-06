@@ -341,7 +341,13 @@ uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
 
   minivpn_packet pkt;
   for (tries = 0; tries < 3; ++tries) {
-    if ((size_t)SSL_peek(ssl, &pkt, sizeof(pkt)) >= sizeof(pkt)) {
+    ssize_t navail = SSL_peek(ssl, &pkt, sizeof(pkt));
+    if (navail < 0) {
+      ERR_print_errors_fp(stderr);
+      return MINIVPN_ERR_COMM;
+    } else if (navail == 0) {
+      return MINIVPN_ERR_EOF;
+    } else if ((size_t)navail >= sizeof(pkt)) {
       break;
     }
     sleep(1);
