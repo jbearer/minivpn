@@ -12,6 +12,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "demon.h"
 #include "debug.h"
 #include "inet.h"
 #include "protocol.h"
@@ -45,97 +46,98 @@ static int open_socket(in_port_t port)
 
 typedef struct {
   tunnel *tun;
-  volatile bool *halt;
 } in_band_arg;
 
-static void *in_band_loop(void *void_arg)
+static int in_band_loop(void *state)
 {
-  in_band_arg *arg = (in_band_arg *)void_arg;
+  in_band_arg *arg = (in_band_arg *)state;
+  tunnel_loop(arg->tun);
+  return DAEMON_EXIT;
+}
 
-  while (!*arg->halt) {
-    tunnel_loop(arg->tun);
-  }
-
+static int in_band_teardown(void *state)
+{
+  in_band_arg *arg = (in_band_arg *)state;
   tunnel_delete(arg->tun);
   free(arg);
-
-  return NULL;
+  return DAEMON_OK;
 }
 
 typedef struct {
   tunnel *tun;
   SSL_CTX *ctx;
   SSL *ssl;
-  volatile bool *halt;
-  pthread_t in_band_thread;
+  demon *in_band_d;
 } out_of_band_arg;
 
-static void *out_of_band_loop(void *void_arg)
+static int out_of_band_loop(void *state)
 {
-  out_of_band_arg *arg = (out_of_band_arg *)void_arg;
+  out_of_band_arg *arg = (out_of_band_arg *)state;
 
-  while (!*arg->halt) {
-    minivpn_packet pkt;
-    debug("waiting for out-of-band message from client\n");
-    int err = minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt);
-    if (err == MINIVPN_ERR_EOF) {
-      debug("connection unexpectedly terminated, releasing client\n");
-      *arg->halt = true;
-      continue;
-    } else if (err == MINIVPN_ERR_TIMEOUT) {
-      debug("timed out waiting for client message\n");
-      continue;
-    } else if (err != MINIVPN_OK) {
-      debug("error receiving out-of-band packet\n");
-      continue;
-    }
-
-    switch (pkt.type) {
-    case MINIVPN_PKT_DETACH:
-      debug("client detached, beginning shutdown process\n");
-      *arg->halt = true;
-      break;
-    case MINIVPN_PKT_UPDATE_KEY:
-      {
-        debug("updating session key\n");
-        minivpn_pkt_update_key *data = (minivpn_pkt_update_key *)pkt.data;
-        if (!tunnel_set_key(arg->tun, data->key)) {
-          minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
-        } else {
-          minivpn_ack(arg->ssl);
-        }
-      }
-      break;
-    case MINIVPN_PKT_UPDATE_IV:
-      {
-        debug("updating session iv\n");
-        minivpn_pkt_update_iv *data = (minivpn_pkt_update_iv *)pkt.data;
-        if (!tunnel_set_iv(arg->tun, data->iv)) {
-          minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
-        } else {
-          minivpn_ack(arg->ssl);
-        }
-      }
-      break;
-    default:
-      debug("received unsupported out-of-band packet type %" PRIu16 "\n", pkt.type);
-      // TODO tell the client we can't do that
-      // Backoff so we don't spam error messages
-      sleep(1);
-    }
+  minivpn_packet pkt;
+  debug("waiting for out-of-band message from client\n");
+  int err = minivpn_recv(arg->ssl, MINIVPN_PKT_ANY, &pkt);
+  if (err == MINIVPN_ERR_EOF) {
+    debug("connection unexpectedly terminated, releasing client\n");
+    return DAEMON_EXIT;
+  } else if (err == MINIVPN_ERR_TIMEOUT) {
+    debug("timed out waiting for client message\n");
+    return DAEMON_OK;
+  } else if (err != MINIVPN_OK) {
+    debug("error receiving out-of-band packet\n");
+    return DAEMON_OK;
   }
+
+  switch (pkt.type) {
+  case MINIVPN_PKT_DETACH:
+    debug("client detached, beginning shutdown process\n");
+    return DAEMON_EXIT;
+  case MINIVPN_PKT_UPDATE_KEY:
+    {
+      debug("updating session key\n");
+      minivpn_pkt_update_key *data = (minivpn_pkt_update_key *)pkt.data;
+      if (!tunnel_set_key(arg->tun, data->key)) {
+        minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
+      } else {
+        minivpn_ack(arg->ssl);
+      }
+    }
+    break;
+  case MINIVPN_PKT_UPDATE_IV:
+    {
+      debug("updating session iv\n");
+      minivpn_pkt_update_iv *data = (minivpn_pkt_update_iv *)pkt.data;
+      if (!tunnel_set_iv(arg->tun, data->iv)) {
+        minivpn_err(arg->ssl, MINIVPN_ERR_SERV);
+      } else {
+        minivpn_ack(arg->ssl);
+      }
+    }
+    break;
+  default:
+    debug("received unsupported out-of-band packet type %" PRIu16 "\n", pkt.type);
+    // TODO tell the client we can't do that
+    // Backoff so we don't spam error messages
+    sleep(1);
+  }
+  return DAEMON_OK;
+}
+
+static int out_of_band_teardown(void *state)
+{
+  out_of_band_arg *arg = (out_of_band_arg *)state;
 
   minivpn_detach(arg->ssl);
 
   tunnel_stop(arg->tun);
-  pthread_join(arg->in_band_thread, NULL);
+  demon_join(arg->in_band_d);
 
   SSL_shutdown(arg->ssl);
   SSL_free(arg->ssl);
   SSL_CTX_free(arg->ctx);
   free(arg);
 
-  return NULL;
+  return DAEMON_OK;
 }
 
 static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
@@ -148,15 +150,9 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
   return strlen(buf);
 }
 
-typedef struct thread_node {
-  pthread_t thread;
-  volatile bool *halt;
-  struct thread_node *next;
-} thread_list;
-
 static void accept_client(const char *cert_file, const char *pkey_file, tunnel_server *tunserv,
                           passwd_db_conn *pwddb, int sockfd, in_addr_t server_ip, in_port_t udp_port,
-                          in_addr_t server_network, in_addr_t server_netmask, thread_list **threads)
+                          in_addr_t server_network, in_addr_t server_netmask, demon_pool *pool)
 {
   // Use select so we can timeout
   fd_set set;
@@ -248,58 +244,31 @@ static void accept_client(const char *cert_file, const char *pkey_file, tunnel_s
     debug("minivpn handshake succeeded\n");
   }
 
-  volatile bool *halt = (bool *)malloc(sizeof(bool));
-  *halt = false;
-
-  pthread_t in_band_thread;
-  int pthread_errno = 0;
+  demon *ibd;
   in_band_arg *ibarg = (in_band_arg *)malloc(sizeof(in_band_arg));
   ibarg->tun = tun;
-  ibarg->halt = halt;
-  if ((pthread_errno = pthread_create(&in_band_thread, NULL, in_band_loop, ibarg)) != 0) {
-    debug("error creating in-band thread: %s\n", strerror(pthread_errno));
-    goto err_in_band_thread_create;
+  if ((ibd = demon_spawn(pool, NULL, in_band_loop, in_band_teardown, ibarg)) == NULL) {
+    debug("error creating in-band demon\n");
+    goto err_in_band_create;
   }
 
-  pthread_t out_of_band_thread;
   out_of_band_arg *obarg = (out_of_band_arg *)malloc(sizeof(out_of_band_arg));
   obarg->ctx = ctx;
   obarg->ssl = ssl;
   obarg->tun = tun;
-  obarg->halt = halt;
-  obarg->in_band_thread = in_band_thread;
-  if ((pthread_errno = pthread_create(&out_of_band_thread, NULL, out_of_band_loop, obarg)) != 0) {
-    debug("error creating out-of-band thread: %s\n", strerror(pthread_errno));
-    goto err_out_of_band_thread_create;
+  obarg->in_band_d = ibd;
+  if ((demon_spawn(pool, NULL, out_of_band_loop, out_of_band_teardown, obarg)) == NULL) {
+    debug("error creating out-of-band demon\n");
+    goto err_out_of_band_create;
   }
-
-  thread_list *next;
-  if (*threads == NULL) {
-    *threads = (thread_list *)malloc(sizeof(thread_list));
-    next = *threads;
-  } else {
-    (*threads)->next = (thread_list *)malloc(sizeof(thread_list));
-    next = (*threads)->next;
-  }
-  if (next == NULL) {
-    perror("error allocating thread node");
-    goto err_thread_list;
-  }
-
-  next->thread = out_of_band_thread;
-  next->halt = halt;
-  next->next = NULL;
-  *threads = next;
 
   debug("successfully launched client\n");
 
   return;
 
-err_thread_list:
-err_out_of_band_thread_create:
-  *halt = true;
+err_out_of_band_create:
   tunnel_stop(tun);
-  pthread_join(in_band_thread, NULL);
+  demon_join(ibd);
   SSL_shutdown(ssl);
   SSL_free(ssl);
   SSL_CTX_free(ctx);
@@ -307,7 +276,7 @@ err_out_of_band_thread_create:
   debug("failed to launch client\n");
   return;
 
-err_in_band_thread_create:
+err_in_band_create:
   tunnel_delete(tun);
   free(ibarg);
 err_minivpn_handshake:
@@ -335,57 +304,63 @@ typedef struct {
   in_addr_t ip;
   in_addr_t network;
   in_addr_t netmask;
-  volatile bool halt;
+  demon_pool *pool;
+
+  // Fields instantiated by setup
+  tunnel_server *tunserv;
+  passwd_db_conn *pwddb;
+  int sockfd;
 } server_arg;
 
-static void *server_main_loop(void *void_arg)
+static int server_main_setup(void *state)
 {
-  server_arg *arg = (server_arg *)void_arg;
+  server_arg *arg = (server_arg *)state;
 
-  int sockfd = open_socket(arg->tcp_port);
-  if (sockfd < 0) {
+  arg->sockfd = open_socket(arg->tcp_port);
+  if (arg->sockfd < 0) {
     goto err_sock;
   }
 
-  passwd_db_conn *pwddb = passwd_db_connect(arg->passwd_db);
-  if (pwddb == NULL) {
+  arg->pwddb = passwd_db_connect(arg->passwd_db);
+  if (arg->pwddb == NULL) {
     debug("unable to open password database\n");
     goto err_pwddb;
   }
 
-  tunnel_server *tunserv = tunnel_server_new(arg->udp_port);
-  if (tunserv == NULL) {
+  arg->tunserv = tunnel_server_new(arg->udp_port);
+  if (arg->tunserv == NULL) {
     debug("unable to create tunnel server\n");
     goto err_tunserv;
   }
 
-  thread_list *threads = NULL;
-
   debug("listening on port %d\n", arg->tcp_port);
-  while (!arg->halt) {
-    accept_client(arg->cert_file, arg->pkey_file, tunserv, pwddb, sockfd, arg->ip, arg->udp_port,
-                  arg->network, arg->netmask, &threads);
-  }
+  return DAEMON_OK;
 
-  for (thread_list *t = threads; t != NULL;) {
-    debug("joining client thread\n");
-    *t->halt = true;
-    pthread_join(t->thread, NULL);
-    debug("client thread joined\n");
-
-    thread_list *next = t->next;
-    free((void *)t->halt);
-    free(t);
-    t = next;
-  }
-
-  tunnel_server_delete(tunserv);
 err_tunserv:
-  passwd_db_close(pwddb);
+  passwd_db_close(arg->pwddb);
 err_pwddb:
-  close(sockfd);
+  close(arg->sockfd);
 err_sock:
-  return NULL;
+  return DAEMON_ABORT;
+}
+
+static int server_main_loop(void *state)
+{
+  server_arg *arg = (server_arg *)state;
+
+  accept_client(arg->cert_file, arg->pkey_file, arg->tunserv, arg->pwddb, arg->sockfd, arg->ip,
+                arg->udp_port, arg->network, arg->netmask, arg->pool);
+
+  return DAEMON_OK;
+}
+
+static int server_main_teardown(void *state)
+{
+  server_arg *arg = (server_arg *)state;
+  tunnel_server_delete(arg->tunserv);
+  passwd_db_close(arg->pwddb);
+  close(arg->sockfd);
+  return DAEMON_OK;
 }
 
 typedef struct {
@@ -448,6 +423,12 @@ int server_start(const char *cert_file, const char *pkey_file, const char *passw
 
   init_ssl();
 
+  demon_pool *pool = demon_pool_new();
+  if (pool == NULL) {
+    debug("unable to start demon pool\n");
+    return 1;
+  }
+
   server_arg arg;
   bzero(&arg, sizeof(arg));
   strncpy(arg.cert_file, cert_file, FILE_PATH_SIZE);
@@ -458,12 +439,9 @@ int server_start(const char *cert_file, const char *pkey_file, const char *passw
   arg.ip = ip;
   arg.network = network;
   arg.netmask = netmask;
-  arg.halt = false;
-
-  pthread_t server_thread;
-  int pthread_errno;
-  if ((pthread_errno = pthread_create(&server_thread, NULL, server_main_loop, &arg)) != 0) {
-    debug("unable to start server thread: %s", strerror(pthread_errno));
+  arg.pool = pool;
+  if (demon_spawn(pool, server_main_setup, server_main_loop, server_main_teardown, &arg) == NULL) {
+    debug("unable to start server demon\n");
     return 1;
   }
 
@@ -496,9 +474,7 @@ next_client:
     close(conn);
   }
 
-  arg.halt = true;
-  pthread_join(server_thread, NULL);
-
+  demon_pool_delete(pool);
   close(sockfd);
   close_ssl();
   return 0;

@@ -32,11 +32,14 @@ bin/tcp.o: src/tcp.c include/tcp.h
 bin/password.o: src/password.c include/password.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
 
+bin/demon.o: src/demon.c include/demon.h
+	$(CC) $(CC_FLAGS) -c -o $@ $<
+
 bin/server.o: src/server/server.c include/server.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
 
 server: bin/minivpn-server-start bin/minivpn-server-ping bin/minivpn-server-stop bin/minivpn-server-user-add
-bin/minivpn-server-%: src/server/%.c bin/server.o bin/tunnel.o bin/protocol.o bin/tcp.o bin/password.o
+bin/minivpn-server-%: src/server/%.c bin/server.o bin/tunnel.o bin/protocol.o bin/tcp.o bin/password.o bin/demon.o
 	$(CC) $(CC_FLAGS) -o $@ $^ $(SSL_LIBS) -lpthread -lncurses -lsqlite3
 
 bin/client.o: src/client/client.c include/client.h

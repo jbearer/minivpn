@@ -453,7 +453,8 @@ void tunnel_delete(tunnel *t)
 {
   tunnel_debug(t, "closing\n");
 
-  pthread_mutex_lock(&t->server->lock);
+  tunnel_server *server = t->server;
+  pthread_mutex_lock(&server->lock);
 
   tunnel_stop(t);
   tunnel_unroute(t);
@@ -464,7 +465,7 @@ void tunnel_delete(tunnel *t)
   t->server->tunnels[t->id] = NULL;
   free(t);
 
-  pthread_mutex_unlock(&t->server->lock);
+  pthread_mutex_unlock(&server->lock);
 }
 
 static ssize_t encrypt(unsigned char *key, unsigned char *iv,
