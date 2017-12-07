@@ -283,6 +283,24 @@ void minivpn_to_host_byte_order(minivpn_packet *pkt)
 
 int minivpn_avail(SSL *ssl)
 {
+  // Use select so we can timeout
+  int fd = SSL_get_fd(ssl);
+  fd_set set;
+  FD_ZERO(&set);
+  FD_SET(fd, &set);
+
+  struct timeval timeout;
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+  int ret = select(fd + 1, &set, NULL, NULL, &timeout);
+  if (ret < 0) {
+    perror("select");
+    return -2;
+  } else if (!FD_ISSET(fd, &set)) {
+    return 0;
+  }
+
   minivpn_packet pkt;
   ssize_t navail = SSL_peek(ssl, &pkt, sizeof(pkt));
   if (navail < 0) {
