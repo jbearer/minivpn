@@ -20,14 +20,12 @@ static void usage(const char *progname)
     SERVER_DEFAULT_CLI_SOCKET);
   fprintf(stderr, "-p, --password-db <path>: password database (default ~/.minivpn/users)\n");
   fprintf(stderr, "-S, --salt <salt>: %d byte salt to hash with password\n", SALT_SIZE);
-  fprintf(stderr, "-o, --offline: update password database but do not attempt to alert running server\n");
   fprintf(stderr, "-h, --help: prints this help text\n");
   exit(1);
 }
 
 int main(int argc, char **argv)
 {
-  int offline = 0;
   char passwd_db[FILE_PATH_SIZE];
   char sock[FILE_PATH_SIZE] = SERVER_DEFAULT_CLI_SOCKET;
   char salt[SALT_SIZE];
@@ -46,12 +44,11 @@ int main(int argc, char **argv)
     {"password-db", required_argument, 0, 'p'},
     {"salt",        required_argument, 0, 'S'},
     {"socket",      required_argument, 0, 's'},
-    {"offline",     no_argument, &offline, 1},
     {0, 0, 0, 0}
   };
 
   char option;
-  while((option = getopt_long(argc, argv, "hp:S:os:", long_options, NULL)) > 0) {
+  while((option = getopt_long(argc, argv, "hp:S:s:", long_options, NULL)) > 0) {
     switch(option) {
     case 'p':
       bzero(passwd_db, FILE_PATH_SIZE);
@@ -63,9 +60,6 @@ int main(int argc, char **argv)
         return 1;
       }
       strcpy(salt, optarg);
-      break;
-    case 'o':
-      offline = 1;
       break;
     case 's':
       bzero(sock, FILE_PATH_SIZE);

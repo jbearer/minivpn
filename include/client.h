@@ -9,7 +9,7 @@
 int client_start(const unsigned char *key, const unsigned char *iv, const char *ca_crt,
                  const char *username, const char *password,
                  const char *cli_socket, in_addr_t server_ip, in_port_t server_port,
-                 in_addr_t client_ip, in_port_t udp_port, in_addr_t network, in_addr_t netmask);
+                 in_port_t udp_port, in_addr_t network, in_addr_t netmask);
 
 bool client_ping(const char *sock);
 bool client_stop(const char *sock);

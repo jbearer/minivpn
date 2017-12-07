@@ -71,7 +71,6 @@ const char *minivpn_errstr(uint16_t code);
 typedef struct {
   unsigned char  key[TUNNEL_KEY_SIZE];
   unsigned char  iv[TUNNEL_IV_SIZE];
-  in_addr_t      client_ip;
   in_port_t      client_port;
   tunnel_id_t    client_tunnel;
   in_addr_t      client_network;
@@ -90,9 +89,8 @@ typedef struct {
 
 tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
                                  const unsigned char *key, const unsigned char *iv,
-                                 uint32_t client_ip, uint16_t client_port,
-                                 uint32_t client_network, uint32_t client_netmask,
-                                 const char *username, const char *password);
+                                 uint16_t client_port, uint32_t client_network,
+                                 uint32_t client_netmask, const char *username, const char *password);
 
 tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
                                  uint32_t server_ip, uint16_t server_port,

@@ -22,7 +22,7 @@
 static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <server-ip> <client-ip> <network> <netmask>\n", progname);
+  fprintf(stderr, "%s [options] <server-ip> <network> <netmask>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
   fprintf(stderr, "-s, --cli-socket <file>: unix socket to use for CLI commands (default is %s)\n",
@@ -47,7 +47,6 @@ int main(int argc, char **argv)
   in_port_t server_port = 55555;
   in_port_t udp_port = 55555;
   in_addr_t server_ip;
-  in_addr_t client_ip;
   in_addr_t network;
   in_addr_t netmask;
   char log[FILE_PATH_SIZE] = {0};
@@ -113,12 +112,11 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != optind + 4) {
+  if (argc != optind + 3) {
     usage(argv[0]);
   }
 
   server_ip = ntoh_ip(inet_addr(argv[optind++]));
-  client_ip = ntoh_ip(inet_addr(argv[optind++]));
   network = ntoh_ip(inet_addr(argv[optind++]));
   netmask = ntoh_ip(inet_addr(argv[optind++]));
 
@@ -151,10 +149,10 @@ int main(int argc, char **argv)
         close(STDERR_FILENO);
       }
       return client_start(key, iv, ca_crt, username, password, cli_socket, server_ip, server_port,
-                          client_ip, udp_port, network, netmask);
+                          udp_port, network, netmask);
     }
   } else {
     return client_start(key, iv, ca_crt, username, password, cli_socket, server_ip, server_port,
-                        client_ip, udp_port, network, netmask);
+                        udp_port, network, netmask);
   }
 }

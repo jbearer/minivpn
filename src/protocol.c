@@ -15,9 +15,8 @@
 
 tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
                                  const unsigned char *key, const unsigned char *iv,
-                                 uint32_t client_ip, uint16_t client_port,
-                                 uint32_t client_network, uint32_t client_netmask,
-                                 const char *username, const char *password)
+                                 uint16_t client_port, uint32_t client_network,
+                                 uint32_t client_netmask, const char *username, const char *password)
 {
   uint16_t err;
 
@@ -31,7 +30,6 @@ tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
   bzero(&client_init, sizeof(client_init));
   memcpy(&client_init.key, key, TUNNEL_KEY_SIZE);
   memcpy(&client_init.iv, iv, TUNNEL_IV_SIZE);
-  client_init.client_ip = client_ip;
   client_init.client_port = client_port;
   client_init.client_tunnel = tunnel_id(tun);
   client_init.client_network = client_network;
@@ -84,6 +82,15 @@ tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_con
 {
   uint16_t err;
 
+  struct sockaddr_in client_addr;
+  socklen_t client_addr_len = sizeof(client_addr);
+  int fd = SSL_get_fd(ssl);
+  if (getpeername(fd, (struct sockaddr *)&client_addr, &client_addr_len) < 0) {
+    perror("getpeername");
+    return NULL;
+  }
+  in_addr_t client_ip = ntoh_ip(client_addr.sin_addr.s_addr);
+
   minivpn_pkt_client_handshake client_init;
   if ((err = minivpn_recv(ssl, MINIVPN_PKT_CLIENT_HANDSHAKE, &client_init)) != MINIVPN_OK) {
     debug("error receiving client handshake: %s\n", minivpn_errstr(err));
@@ -110,7 +117,7 @@ tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_con
   if (!tunnel_set_iv(tun, client_init.iv)) {
     goto err_free_tun;
   }
-  if (!tunnel_connect(tun, client_init.client_ip, client_init.client_port, client_init.client_tunnel)) {
+  if (!tunnel_connect(tun, client_ip, client_init.client_port, client_init.client_tunnel)) {
     debug("could not connect tunnel\n");
     goto err_free_tun;
   }
@@ -185,7 +192,6 @@ uint16_t minivpn_detach(SSL *ssl)
 
 static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake *p)
 {
-  p->client_ip = hton_ip(p->client_ip);
   p->client_port = hton_port(p->client_port);
   p->client_tunnel = hton_tunnel_id(p->client_tunnel);
   p->client_network = hton_ip(p->client_network);
@@ -233,7 +239,6 @@ void minivpn_to_network_byte_order(minivpn_packet *pkt)
 
 static void client_handshake_to_host_byte_order(minivpn_pkt_client_handshake *p)
 {
-  p->client_ip = ntoh_ip(p->client_ip);
   p->client_port = ntoh_port(p->client_port);
   p->client_tunnel = ntoh_tunnel_id(p->client_tunnel);
   p->client_network = ntoh_ip(p->client_network);
