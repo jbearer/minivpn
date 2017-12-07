@@ -80,7 +80,6 @@ typedef struct {
 } minivpn_pkt_client_handshake;
 
 typedef struct {
-  in_addr_t    server_ip;
   in_port_t    server_port;
   tunnel_id_t  server_tunnel;
   in_addr_t    server_network;
@@ -89,12 +88,11 @@ typedef struct {
 
 tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
                                  const unsigned char *key, const unsigned char *iv,
-                                 uint16_t client_port, uint32_t client_network,
+                                 in_addr_t server_ip, uint16_t client_port, uint32_t client_network,
                                  uint32_t client_netmask, const char *username, const char *password);
 
 tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
-                                 uint32_t server_ip, uint16_t server_port,
-                                 uint32_t server_network, uint32_t server_netmask);
+                                 uint16_t server_port, uint32_t server_network, uint32_t server_netmask);
 
 /*
  * SESSION KEY UPDATE

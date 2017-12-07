@@ -15,7 +15,7 @@
 
 tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
                                  const unsigned char *key, const unsigned char *iv,
-                                 uint16_t client_port, uint32_t client_network,
+                                 in_addr_t server_ip, uint16_t client_port, uint32_t client_network,
                                  uint32_t client_netmask, const char *username, const char *password)
 {
   uint16_t err;
@@ -55,7 +55,7 @@ tunnel *minivpn_client_handshake(SSL *ssl, tunnel_server *tunserv,
     debug("error setting tunnel iv\n");
     goto err_free_tun;
   }
-  if (!tunnel_connect(tun, server_init.server_ip, server_init.server_port, server_init.server_tunnel)) {
+  if (!tunnel_connect(tun, server_ip, server_init.server_port, server_init.server_tunnel)) {
     debug("error connecting tunnel\n");
     goto err_free_tun;
   }
@@ -77,8 +77,8 @@ err_free_tun:
 }
 
 tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_conn *pwddb,
-                                 uint32_t server_ip, uint16_t server_port,
-                                 uint32_t server_network, uint32_t server_netmask)
+                                 uint16_t server_port, uint32_t server_network,
+                                 uint32_t server_netmask)
 {
   uint16_t err;
 
@@ -127,7 +127,6 @@ tunnel *minivpn_server_handshake(SSL *ssl, tunnel_server *tunserv, passwd_db_con
   }
 
   minivpn_pkt_server_handshake server_init;
-  server_init.server_ip = server_ip;
   server_init.server_port = server_port;
   server_init.server_tunnel = tunnel_id(tun);
   server_init.server_network = server_network;
@@ -200,7 +199,6 @@ static void client_handshake_to_network_byte_order(minivpn_pkt_client_handshake 
 
 static void server_handshake_to_network_byte_order(minivpn_pkt_server_handshake *p)
 {
-  p->server_ip = hton_ip(p->server_ip);
   p->server_port = hton_port(p->server_port);
   p->server_tunnel = hton_tunnel_id(p->server_tunnel);
   p->server_network = hton_ip(p->server_network);
@@ -247,7 +245,6 @@ static void client_handshake_to_host_byte_order(minivpn_pkt_client_handshake *p)
 
 static void server_handshake_to_host_byte_order(minivpn_pkt_server_handshake *p)
 {
-  p->server_ip = ntoh_ip(p->server_ip);
   p->server_port = ntoh_port(p->server_port);
   p->server_tunnel = ntoh_tunnel_id(p->server_tunnel);
   p->server_network = ntoh_ip(p->server_network);

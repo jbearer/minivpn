@@ -12,7 +12,7 @@ First build everything with `make`. You'll probably want to add `minivpn/bin` to
 _Start a server_
 
 ```
-minivpn-server start -n <network> -m <netmask> <server-ip>
+minivpn-server start <network> <netmask>
 ```
 
 _Check if the server is running_
@@ -32,7 +32,7 @@ minivpn-server user add <username>
 _Start a client_
 
 ```
-minivpn-client start <server-ip> <client-ip> <client-network> <client-netmask>
+minivpn-client start <client-ip> <client-network> <client-netmask>
 ```
 
 _Check if the client is running_

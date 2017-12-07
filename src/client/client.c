@@ -121,7 +121,7 @@ static session *session_new(const unsigned char *key, const unsigned char *iv, c
 
   debug("SSL handshake complete, beginning minivpn handshake with %s:%" PRIu16 "\n", server_ip_str, server_port);
   s->tun = minivpn_client_handshake(
-    s->ssl, s->tunserv, key, iv, client_port, network, netmask, username, password);
+    s->ssl, s->tunserv, key, iv, server_ip, client_port, network, netmask, username, password);
   if (s->tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;

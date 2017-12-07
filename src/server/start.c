@@ -13,14 +13,12 @@
 static void usage(const char *progname)
 {
   fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "%s [options] <server-ip>\n", progname);
+  fprintf(stderr, "%s [options] <network> <netmask>\n", progname);
   fprintf(stderr, "%s -h\n", progname);
   fprintf(stderr, "\n");
   fprintf(stderr, "-c, --cert-file <path>: SSL certificate file (default ~/.minivpn/server.crt\n");
   fprintf(stderr, "-k, --key-file <path>: RSA private key file (default ~/.minivpn/server.key\n");
   fprintf(stderr, "-p, --password-db <path>: password database (default ~/.minivpn/users)\n");
-  fprintf(stderr, "-n, --network <IP>: VPN IP prefix (defult server_ip)\n");
-  fprintf(stderr, "-m, --netmask <mask>: VPN network mask (default 255.255.255.255)\n");
   fprintf(stderr, "-t, --tcp-port <port>: TCP server port (default 55555)\n");
   fprintf(stderr, "-u, --udp-port <port>: UDP port for tunnels (default 55555)\n");
   fprintf(stderr, "-s, --cli-socket <file>: unix socket to use for CLI commands (default is %s)\n",
@@ -36,10 +34,8 @@ int main(int argc, char **argv)
   int fork_daemon = 1;
   in_port_t tcp_port = 55555;
   in_port_t udp_port = 55555;
-  in_addr_t server_ip;
-  bool      network_set = false;
   in_addr_t network;
-  in_addr_t netmask = -1;
+  in_addr_t netmask;
   char cert_file[FILE_PATH_SIZE] = {0};
   char pkey_file[FILE_PATH_SIZE] = {0};
   char passwd_db[FILE_PATH_SIZE];
@@ -57,8 +53,6 @@ int main(int argc, char **argv)
     {"cert-file",     required_argument, 0, 'c'},
     {"key-file",      required_argument, 0, 'k'},
     {"password-db",   required_argument, 0, 'p'},
-    {"network",       required_argument, 0, 'n'},
-    {"netmask",       required_argument, 0, 'm'},
     {"tcp-port",      required_argument, 0, 't'},
     {"udp-port",      required_argument, 0, 'u'},
     {"no-daemon",     no_argument, &fork_daemon, 0},
@@ -67,7 +61,7 @@ int main(int argc, char **argv)
 
   char option;
   int option_index = 0;
-  while((option = getopt_long(argc, argv, "c:k:p:n:m:t:u:s:o:Dh", long_options, &option_index)) > 0) {
+  while((option = getopt_long(argc, argv, "c:k:p:t:u:s:o:Dh", long_options, &option_index)) > 0) {
     switch(option) {
     case 'k':
       bzero(pkey_file, FILE_PATH_SIZE);
@@ -80,13 +74,6 @@ int main(int argc, char **argv)
     case 'p':
       bzero(passwd_db, FILE_PATH_SIZE);
       strncpy(passwd_db, optarg, FILE_PATH_SIZE-1);
-      break;
-    case 'n':
-      network = ntoh_ip(inet_addr(optarg));
-      network_set = true;
-      break;
-    case 'm':
-      netmask = ntoh_ip(inet_addr(optarg));
       break;
     case 't':
       tcp_port = atoi(optarg);
@@ -111,14 +98,12 @@ int main(int argc, char **argv)
     }
   }
 
-  if (argc != optind + 1) {
+  if (argc != optind + 2) {
     usage(argv[0]);
   }
 
-  server_ip = ntoh_ip(inet_addr(argv[optind++]));
-  if (!network_set) {
-    network = server_ip;
-  }
+  network = ntoh_ip(inet_addr(argv[optind++]));
+  netmask = ntoh_ip(inet_addr(argv[optind++]));
 
   debug("key is located at %s\n", pkey_file);
   debug("crt is located at %s\n", cert_file);
@@ -151,11 +136,11 @@ int main(int argc, char **argv)
         close(STDERR_FILENO);
       }
       return server_start(cert_file, pkey_file, passwd_db, pkey_password, cli_socket,
-                          server_ip, tcp_port, udp_port, network, netmask);
+                          tcp_port, udp_port, network, netmask);
     }
   } else {
     return server_start(cert_file, pkey_file, passwd_db, pkey_password, cli_socket,
-                          server_ip, tcp_port, udp_port, network, netmask);
+                        tcp_port, udp_port, network, netmask);
   }
 
   return 0;

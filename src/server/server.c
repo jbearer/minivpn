@@ -151,7 +151,7 @@ static int pkey_password_cb(char *buf, int size, int rwflag, void *userdata)
 }
 
 static void accept_client(const char *cert_file, const char *pkey_file, tunnel_server *tunserv,
-                          passwd_db_conn *pwddb, int sockfd, in_addr_t server_ip, in_port_t udp_port,
+                          passwd_db_conn *pwddb, int sockfd, in_port_t udp_port,
                           in_addr_t server_network, in_addr_t server_netmask, demon_pool *pool)
 {
   // Use select so we can timeout
@@ -236,7 +236,7 @@ static void accept_client(const char *cert_file, const char *pkey_file, tunnel_s
     client_ip_str, client_tcp_port);
 
   tunnel *tun = minivpn_server_handshake(
-    ssl, tunserv, pwddb, server_ip, udp_port, server_network, server_netmask);
+    ssl, tunserv, pwddb, udp_port, server_network, server_netmask);
   if (tun == NULL) {
     debug("minivpn handshake failed\n");
     goto err_minivpn_handshake;
@@ -301,7 +301,6 @@ typedef struct {
   char passwd_db[FILE_PATH_SIZE];
   in_port_t tcp_port;
   in_port_t udp_port;
-  in_addr_t ip;
   in_addr_t network;
   in_addr_t netmask;
   demon_pool *pool;
@@ -348,7 +347,7 @@ static int server_main_loop(void *state)
 {
   server_arg *arg = (server_arg *)state;
 
-  accept_client(arg->cert_file, arg->pkey_file, arg->tunserv, arg->pwddb, arg->sockfd, arg->ip,
+  accept_client(arg->cert_file, arg->pkey_file, arg->tunserv, arg->pwddb, arg->sockfd,
                 arg->udp_port, arg->network, arg->netmask, arg->pool);
 
   return DAEMON_OK;
@@ -405,8 +404,7 @@ static bool eval_command(session *s, int conn, const cli_command *command)
 
 int server_start(const char *cert_file, const char *pkey_file, const char *passwd_db,
                  const char *_pkey_password, const char *cli_socket,
-                 in_addr_t ip, in_port_t tcp_port, in_port_t udp_port,
-                 in_addr_t network, in_addr_t netmask)
+                 in_port_t tcp_port, in_port_t udp_port, in_addr_t network, in_addr_t netmask)
 {
   strncpy(pkey_password, _pkey_password, PASSWORD_SIZE);
 
@@ -436,7 +434,6 @@ int server_start(const char *cert_file, const char *pkey_file, const char *passw
   strncpy(arg.passwd_db, passwd_db, FILE_PATH_SIZE);
   arg.tcp_port = tcp_port;
   arg.udp_port = udp_port;
-  arg.ip = ip;
   arg.network = network;
   arg.netmask = netmask;
   arg.pool = pool;
