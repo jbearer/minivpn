@@ -355,28 +355,25 @@ uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
   FD_SET(fd, &set);
 
   struct timeval timeout;
-  timeout.tv_sec = 1;
-  timeout.tv_usec = 0;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 100000;
 
   int tries;
-  for (tries = 0; tries < 3; ++tries) {
+  for (tries = 0; tries < 30; ++tries) {
     ret = select(fd + 1, &set, NULL, NULL, &timeout);
     if (ret < 0) {
       perror("select");
       return MINIVPN_ERR_COMM;
-    }
-    if (FD_ISSET(fd, &set)) {
+    } else if (FD_ISSET(fd, &set)) {
       break;
-    } else {
-      sleep(1);
     }
   }
-  if (tries == 3) {
+  if (tries == 30) {
     return MINIVPN_ERR_TIMEOUT;
   }
 
   minivpn_packet pkt;
-  for (tries = 0; tries < 3; ++tries) {
+  for (tries = 0; tries < 30; ++tries) {
     ssize_t navail = SSL_peek(ssl, &pkt, sizeof(pkt));
     if (navail < 0) {
       ERR_print_errors_fp(stderr);
@@ -386,9 +383,9 @@ uint16_t minivpn_recv_raw(SSL *ssl, uint16_t type, void *data, size_t data_len)
     } else if ((size_t)navail >= sizeof(pkt)) {
       break;
     }
-    sleep(1);
+    usleep(100000);
   }
-  if (tries == 3) {
+  if (tries == 30) {
     return MINIVPN_ERR_TIMEOUT;
   }
 
