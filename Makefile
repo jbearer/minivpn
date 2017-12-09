@@ -9,7 +9,7 @@ ifdef MINIVPN_DEBUG
 CC_FLAGS += -DDEBUG -g
 endif
 
-all: $(SIMPLETUN_LOGS_DIR) server client
+all: $(SIMPLETUN_LOGS_DIR) server client docs
 
 clean:
 	rm -f ./bin/key
@@ -17,8 +17,12 @@ clean:
 	rm -f ./bin/minivpn-server-*
 	rm -f ./bin/*.o
 	rm -f ./bin/minivpn-client-*
+	rm -rf ./docs
 
 again: clean all
+
+docs: include/*.h doxygen.conf
+	doxygen doxygen.conf
 
 bin/tunnel.o: src/tunnel.c include/tunnel.h
 	$(CC) $(CC_FLAGS) -c -o $@ $<
